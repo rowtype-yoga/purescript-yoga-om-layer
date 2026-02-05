@@ -17,11 +17,15 @@
             {
               "record": ">=4.0.0 <5.0.0"
             },
-            "record-studio",
+            {
+              "record-studio": ">=1.0.4 <2.0.0"
+            },
             {
               "type-equality": ">=4.0.0 <5.0.0"
             },
-            "unsafe-coerce",
+            {
+              "unsafe-coerce": ">=6.0.0 <7.0.0"
+            },
             {
               "yoga-om-core": ">=1.0.0 <2.0.0"
             }
