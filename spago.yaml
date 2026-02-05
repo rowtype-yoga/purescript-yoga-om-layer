@@ -13,13 +13,13 @@ package:
       githubOwner: rowtype-yoga
       githubRepo: purescript-yoga-om-layer
   dependencies:
-    - record-studio
-    - unsafe-coerce
     - aff: ">=7.0.0 <8.0.0"
     - newtype: ">=5.0.0 <6.0.0"
     - prelude: ">=6.0.0 <7.0.0"
     - record: ">=4.0.0 <5.0.0"
+    - record-studio: ">=1.0.4 <2.0.0"
     - type-equality: ">=4.0.0 <5.0.0"
+    - unsafe-coerce: ">=6.0.0 <7.0.0"
     - yoga-om-core: ">=1.0.0 <2.0.0"
   test:
     main: Test.Main
