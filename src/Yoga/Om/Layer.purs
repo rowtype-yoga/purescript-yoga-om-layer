@@ -43,7 +43,7 @@ makeLayer = OmLayer
 -- If not, show a helpful diff of required vs available
 class CheckAllProvided (required :: Row Type) (available :: Row Type)
 
-instance checkAllProvidedImpl ::
+instance
   ( RowToList required reqList
   , RowToList available availList
   , CheckAllLabelsExist reqList availList required available
@@ -55,10 +55,10 @@ instance checkAllProvidedImpl ::
 class CheckAllLabelsExist (required :: RowList Type) (available :: RowList Type) (requiredRow :: Row Type) (availableRow :: Row Type)
 
 -- Base case: no more requirements to check
-instance checkAllLabelsNil :: CheckAllLabelsExist Nil available requiredRow availableRow
+instance CheckAllLabelsExist Nil available requiredRow availableRow
 
 -- Recursive case: check if this label exists, then check the rest
-instance checkAllLabelsCons ::
+instance
   ( CheckLabelExists label ty available requiredRow availableRow
   , CheckAllLabelsExist tail available requiredRow availableRow
   ) =>
@@ -70,7 +70,7 @@ class CheckLabelExists (label :: Symbol) (ty :: Type) (available :: RowList Type
 
 -- Found it! The label matches in the instance head
 -- TypeEquals ensures the types at this label actually match!
-instance checkLabelExistsFound ::
+instance
   TypeEquals ty ty' =>
   CheckLabelExists label ty (Cons label ty' tail) requiredRow availableRow
 
