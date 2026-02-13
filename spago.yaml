@@ -10,10 +10,13 @@ package:
       githubRepo: purescript-yoga-om-layer
   dependencies:
     - aff: ">=7.1.0 <8.0.0"
+    - arrays: ">=7.3.0 <8.0.0"
+    - foldable-traversable: ">=6.0.0 <7.0.0"
     - newtype: ">=5.0.0 <6.0.0"
     - prelude: ">=6.0.2 <7.0.0"
     - record: ">=4.0.0 <5.0.0"
     - record-studio: ">=1.0.4 <2.0.0"
+    - tuples: ">=7.0.0 <8.0.0"
     - type-equality: ">=4.0.1 <5.0.0"
     - unsafe-coerce: ">=6.0.0 <7.0.0"
     - yoga-om: ">=1.2.2 <2.0.0"
