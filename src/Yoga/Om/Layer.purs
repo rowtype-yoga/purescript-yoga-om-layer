@@ -8,6 +8,7 @@ module Yoga.Om.Layer
   , bracketLayer
   , runLayer
   , runScoped
+  , withScoped
   , combineRequirements
   , provide
   , (>->)
@@ -78,7 +79,9 @@ makeScopedLayer
   -> OmLayer req prov err
 makeScopedLayer acquire release = OmLayer do
   prov <- acquire
-  pure (prov /\ Finalizers [ release prov ])
+  pure (prov /\ finalizer prov)
+  where
+  finalizer prov = Finalizers [ release prov ]
 
 -- | Bracket-style scoped layer: acquire a resource, build provisions from it,
 -- | and register a finalizer for the resource.
@@ -91,7 +94,9 @@ bracketLayer
 bracketLayer acquire release use = OmLayer do
   resource <- acquire
   prov <- use resource
-  pure (prov /\ Finalizers [ release resource ])
+  pure (prov /\ finalizer resource)
+  where
+  finalizer resource = Finalizers [ release resource ]
 
 -- =============================================================================
 -- Custom Type Errors for Missing Dependencies
@@ -180,17 +185,26 @@ runLayer _ctx layer = unsafeCastLayer layer <#> \(prov /\ _) -> prov
   unsafeCastLayer :: OmLayer req prov err -> Om (Record available) err (Record prov /\ Finalizers)
   unsafeCastLayer = unsafeCoerce
 
--- | Run a fully-provided layer within a scope, passing the provisions to a
--- | callback. All finalizers are guaranteed to run in reverse order when the
--- | callback completes, whether by success, failure, or interruption.
+-- | Build a fully-provided layer, run finalizers, return the provisions.
+-- | Useful when you just need the built services.
 runScoped
+  :: forall prov
+   . OmLayer () prov ()
+  -> Aff (Record prov)
+runScoped layer = withScoped layer pure
+
+-- | Build a fully-provided layer and pass the provisions to a callback.
+-- | All finalizers run in reverse order when the callback completes,
+-- | whether by success, failure, or interruption.
+withScoped
   :: forall prov a
    . OmLayer () prov ()
   -> (Record prov -> Aff a)
   -> Aff a
-runScoped (OmLayer om) callback = generalBracket acquire conditions use
+withScoped (OmLayer om) callback = generalBracket acquire conditions use
   where
-  acquire = Om.runOm {} { exception: \_ -> pure (unsafeCoerce {} /\ mempty) } om
+  acquire = Om.runOm {} errorHandlers om
+  errorHandlers = { exception: \_ -> pure (unsafeCoerce {} /\ mempty) }
   conditions =
     { completed: \_ (_ /\ fins) -> runFinalizers fins
     , failed: \_ (_ /\ fins) -> runFinalizers fins
@@ -222,9 +236,9 @@ combineRequirements
   -> OmLayer req2 prov2 err2
   -> OmLayer reqDeduped provMerged ()
 combineRequirements (OmLayer build1) (OmLayer build2) = OmLayer do
-  rec1 /\ fins1 <- Om.expand build1
-  rec2 /\ fins2 <- Om.expand build2
-  pure (Record.merge rec1 rec2 /\ (fins1 <> fins2))
+  prov1 /\ fins1 <- Om.expand build1
+  prov2 /\ fins2 <- Om.expand build2
+  pure (Record.merge prov1 prov2 /\ (fins1 <> fins2))
 
 -- =============================================================================
 -- Vertical composition — feed output of one layer into input of another
@@ -243,9 +257,10 @@ provide
   -> OmLayer req prov2 ()
 provide (OmLayer layer2) (OmLayer layer1) = OmLayer do
   prov1 /\ fins1 <- Om.expand layer1
-  prov2 /\ fins2 <- liftAff $ Om.runOm prov1
-    { exception: \_ -> pure (unsafeCoerce {} /\ mempty) }
-    (Om.expand layer2)
+  prov2 /\ fins2 <- runLayer2 prov1
   pure (prov2 /\ (fins1 <> fins2))
+  where
+  runLayer2 ctx = liftAff $ Om.runOm ctx errorHandlers (Om.expand layer2)
+  errorHandlers = { exception: \_ -> pure (unsafeCoerce {} /\ mempty) }
 
 infixl 9 provide as >->

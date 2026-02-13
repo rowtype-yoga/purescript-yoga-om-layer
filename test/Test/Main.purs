@@ -16,7 +16,7 @@ import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer(..), Finalizers, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runScoped, provide)
+import Yoga.Om.Layer (OmLayer(..), Finalizers, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runScoped, withScoped, provide)
 
 -- Example types
 type Config = { port :: Int, host :: String }
@@ -151,20 +151,20 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         combined = combineRequirements layerA layerBC
 
-      liftAff $ runScoped combined \_ -> pure unit
+      _ <- liftAff $ runScoped combined
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "release-C", "release-B", "release-A" ]
 
     it "runs finalizers when the callback throws" do
       log <- liftEffect $ Ref.new []
       let
+        layer :: OmLayer () (value :: String) ()
         layer = makeScopedLayer
           (pure { value: "acquired" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "released" ]) log)
 
-      -- The callback throws, but finalizers should still run
-      _ <- liftAff $ runScoped layer (\_ -> throwError (error "callback failed"))
-        # try
+      _ <- liftAff $ try $ withScoped layer \_ ->
+        throwError (error "callback failed")
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "released" ]
 
@@ -186,8 +186,8 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         composed = upperLayer `provide` baseLayer
 
-      result <- liftAff $ runScoped composed \r -> pure r.upper
-      result `shouldEqual` "base-value-extended"
+      result <- liftAff $ runScoped composed
+      result.upper `shouldEqual` "base-value-extended"
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "release-upper", "release-base" ]
 
@@ -202,8 +202,8 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release" ]) log)
           (\n -> pure { value: n })
 
-      result <- liftAff $ runScoped layer \r -> pure r.value
-      result `shouldEqual` 42
+      result <- liftAff $ runScoped layer
+      result.value `shouldEqual` 42
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "acquire", "release" ]
 
@@ -220,7 +220,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         combined = combineRequirements scopedLayer plainLayer
 
-      result <- liftAff $ runScoped combined \r -> pure r
+      result <- liftAff $ runScoped combined
       result.scoped `shouldEqual` "yes"
       result.plain `shouldEqual` "no-finalizer"
       finalLog <- liftEffect $ Ref.read log
