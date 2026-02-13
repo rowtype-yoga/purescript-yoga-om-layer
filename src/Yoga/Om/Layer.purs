@@ -14,6 +14,9 @@ module Yoga.Om.Layer
   , combineRequirements
   , provide
   , (>->)
+  , class CheckMemoKeys
+  , class CheckMemoKeysList
+  , class CheckKeyNotDuplicated
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -85,15 +88,16 @@ closeScope (Scope s) = do
 -- OmLayer
 -- =============================================================================
 
--- | A layer that requires dependencies (req) and provides services (prov).
-data OmLayer req prov err = OmLayer (Om (Record req) err (Record prov))
+-- | A layer that requires dependencies (req), provides services (prov),
+-- | and tracks memoization keys (memo) to prevent key collisions at compile time.
+data OmLayer req prov err (memo :: Row Type) = OmLayer (Om (Record req) err (Record prov))
 
 -- =============================================================================
 -- Layer constructors
 -- =============================================================================
 
 -- | Create a layer from an Om computation.
-makeLayer :: forall req prov err. Om (Record req) err (Record prov) -> OmLayer req prov err
+makeLayer :: forall req prov err. Om (Record req) err (Record prov) -> OmLayer req prov err ()
 makeLayer = OmLayer
 
 -- | Create a scoped layer with acquire/release semantics.
@@ -103,7 +107,7 @@ makeScopedLayer
   :: forall req prov err
    . Om { scope :: Scope | req } err (Record prov)
   -> (Record prov -> Aff Unit)
-  -> OmLayer (scope :: Scope | req) prov err
+  -> OmLayer (scope :: Scope | req) prov err ()
 makeScopedLayer acquire release = makeLayer do
   acquireRelease acquire release
 
@@ -114,7 +118,7 @@ bracketLayer
    . Om { scope :: Scope | req } err resource
   -> (resource -> Aff Unit)
   -> (resource -> Om { scope :: Scope | req } err (Record prov))
-  -> OmLayer (scope :: Scope | req) prov err
+  -> OmLayer (scope :: Scope | req) prov err ()
 bracketLayer acquire release use = makeLayer do
   resource <- acquireRelease acquire (\r -> release r)
   use resource
@@ -137,11 +141,11 @@ acquireRelease acquire release = do
 -- | If the same key has already been built in this scope, the cached result
 -- | is returned without re-running the layer.
 memoized
-  :: forall sym req prov err
+  :: forall sym req prov err memo
    . IsSymbol sym
   => Proxy sym
-  -> OmLayer (scope :: Scope | req) prov err
-  -> OmLayer (scope :: Scope | req) prov err
+  -> OmLayer (scope :: Scope | req) prov err memo
+  -> OmLayer (scope :: Scope | req) prov err (sym :: Record prov | memo)
 memoized _ (OmLayer om) = OmLayer do
   { scope: Scope s } <- Om.ask
   let key = reflectSymbol (Proxy :: Proxy sym)
@@ -152,6 +156,38 @@ memoized _ (OmLayer om) = OmLayer do
       prov <- om
       liftEffect $ Ref.modify_ (Map.insert key (toDynamic prov)) s.cache
       pure prov
+
+-- =============================================================================
+-- Memo key safety — reject duplicate keys with different types
+-- =============================================================================
+
+class CheckMemoKeys (row :: Row Type)
+
+instance (RowToList row rl, CheckMemoKeysList rl) => CheckMemoKeys row
+
+class CheckMemoKeysList (rl :: RowList Type)
+
+instance CheckMemoKeysList Nil
+
+instance
+  ( CheckMemoKeysList tail
+  , CheckKeyNotDuplicated label ty tail
+  ) =>
+  CheckMemoKeysList (Cons label ty tail)
+
+class CheckKeyNotDuplicated (label :: Symbol) (ty :: Type) (rest :: RowList Type)
+
+instance CheckKeyNotDuplicated label ty Nil
+
+instance
+  ( TypeEquals ty ty'
+  , CheckKeyNotDuplicated label ty tail
+  ) =>
+  CheckKeyNotDuplicated label ty (Cons label ty' tail)
+
+else instance
+  CheckKeyNotDuplicated label ty tail =>
+  CheckKeyNotDuplicated label ty (Cons otherLabel otherTy tail)
 
 -- =============================================================================
 -- Custom Type Errors for Missing Dependencies
@@ -229,10 +265,10 @@ else instance
 
 -- | Run a layer with a given context, with custom error if requirements aren't met.
 runLayer
-  :: forall req prov err available
+  :: forall req prov err available memo
    . CheckAllProvided req available
   => Record available
-  -> OmLayer req prov err
+  -> OmLayer req prov err memo
   -> Om (Record available) err (Record prov)
 runLayer _ctx (OmLayer om) = widenCtx om
   where
@@ -242,8 +278,8 @@ runLayer _ctx (OmLayer om) = widenCtx om
 -- | Build a fully-provided scoped layer, return the provisions.
 -- | All finalizers run after the provisions are returned.
 runScoped
-  :: forall prov
-   . OmLayer (scope :: Scope) prov ()
+  :: forall prov memo
+   . OmLayer (scope :: Scope) prov () memo
   -> Aff (Record prov)
 runScoped layer = withScoped layer pure
 
@@ -252,8 +288,8 @@ runScoped layer = withScoped layer pure
 -- | running all finalizers in reverse order — whether by success, failure,
 -- | or interruption.
 withScoped
-  :: forall prov a
-   . OmLayer (scope :: Scope) prov ()
+  :: forall prov a memo
+   . OmLayer (scope :: Scope) prov () memo
   -> (Record prov -> Aff a)
   -> Aff a
 withScoped (OmLayer om) callback = bracket acquire release use
@@ -270,7 +306,7 @@ withScoped (OmLayer om) callback = bracket acquire release use
 -- =============================================================================
 
 combineRequirements
-  :: forall req1 req2 prov1 prov2 err1 err2 provMerged provMergedRaw reqMerged reqDeduped _req1 _req2 _err1 _err2
+  :: forall req1 req2 prov1 prov2 err1 err2 memo1 memo2 provMerged provMergedRaw reqMerged reqDeduped memoMerged memoDeduped _req1 _req2 _err1 _err2
    . Union req1 req2 reqMerged
   => Nub reqMerged reqDeduped
   => Union req1 _req1 reqDeduped
@@ -279,11 +315,14 @@ combineRequirements
   => Union err2 _err2 ()
   => Union prov1 prov2 provMergedRaw
   => Nub provMergedRaw provMerged
+  => Union memo1 memo2 memoMerged
+  => CheckMemoKeys memoMerged
+  => Nub memoMerged memoDeduped
   => Keys req1
   => Keys req2
-  => OmLayer req1 prov1 err1
-  -> OmLayer req2 prov2 err2
-  -> OmLayer reqDeduped provMerged ()
+  => OmLayer req1 prov1 err1 memo1
+  -> OmLayer req2 prov2 err2 memo2
+  -> OmLayer reqDeduped provMerged () memoDeduped
 combineRequirements (OmLayer build1) (OmLayer build2) = OmLayer do
   rec1 <- Om.expand build1
   rec2 <- Om.expand build2
@@ -294,7 +333,7 @@ combineRequirements (OmLayer build1) (OmLayer build2) = OmLayer do
 -- =============================================================================
 
 provide
-  :: forall req prov1 prov2 err1 err2 req2 reqOut _req _prov1 _err1 _err2
+  :: forall req prov1 prov2 err1 err2 req2 reqOut memo1 memo2 memoMerged memoDeduped _req _prov1 _err1 _err2
    . Union req _req req
   => Union prov1 _prov1 prov1
   => Union err1 _err1 ()
@@ -302,12 +341,15 @@ provide
   => Union prov1 req reqOut
   => Nub reqOut reqOut
   => Union req2 _prov1 reqOut
+  => Union memo1 memo2 memoMerged
+  => CheckMemoKeys memoMerged
+  => Nub memoMerged memoDeduped
   => Keys req
   => Keys prov1
   => Keys req2
-  => OmLayer req2 prov2 err2
-  -> OmLayer req prov1 err1
-  -> OmLayer req prov2 ()
+  => OmLayer req2 prov2 err2 memo2
+  -> OmLayer req prov1 err1 memo1
+  -> OmLayer req prov2 () memoDeduped
 provide (OmLayer layer2) (OmLayer layer1) = OmLayer do
   prov1 <- Om.expand layer1
   Om.expand layer2 # Om.widenCtx prov1

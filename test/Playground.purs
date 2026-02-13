@@ -25,24 +25,24 @@ type CacheL r = (cache :: Cache | r)
 type CacheL_ = CacheL ()
 
 -- Example layer 1: needs config, provides logger
-loggerLayer :: OmLayer ConfigL_ LoggerL_ ()
+loggerLayer :: OmLayer ConfigL_ LoggerL_ () _
 loggerLayer = makeLayer do
   { config } <- Om.ask
   pure { logger: { log: \msg -> pure unit } }
 
 -- Example layer 2: needs config, provides database
-databaseLayer :: OmLayer ConfigL_ DatabaseL_ ()
+databaseLayer :: OmLayer ConfigL_ DatabaseL_ () _
 databaseLayer = makeLayer do
   { config } <- Om.ask
   pure { database: { query: \q -> pure [] } }
 
 -- Example layer 3: needs logger and database, provides cache
-cacheLayer :: OmLayer (LoggerL + DatabaseL_) CacheL_ ()
+cacheLayer :: OmLayer (LoggerL + DatabaseL_) CacheL_ () _
 cacheLayer = makeLayer do
   { logger, database } <- Om.ask
   pure { cache: { get: \key -> pure Nothing } }
 
-programLayer :: OmLayer (DatabaseL + CacheL_) () ()
+programLayer :: OmLayer (DatabaseL + CacheL_) () () _
 programLayer = makeLayer do
   pure {}
 

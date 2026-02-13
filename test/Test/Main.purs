@@ -30,13 +30,13 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       -- Define layers with dependencies
       let
         -- Layer that requires config
-        loggerLayer :: OmLayer (config :: Config) (logger :: Logger) ()
+        loggerLayer :: OmLayer (config :: Config) (logger :: Logger) () _
         loggerLayer = makeLayer do
           { config } <- Om.ask
           pure { logger: { log: \msg -> Console.log $ "[" <> config.host <> "] " <> msg } }
 
         -- Layer that also requires config
-        databaseLayer :: OmLayer (config :: Config) (database :: Database) ()
+        databaseLayer :: OmLayer (config :: Config) (database :: Database) () _
         databaseLayer = makeLayer do
           { config } <- Om.ask
           pure { database: { query: \q -> pure [ "Result from " <> config.host ] } }
@@ -47,7 +47,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       let
         -- The type annotation proves deduplication works:
         _proofOfDeduplication
-          :: OmLayer (config :: Config) _ _
+          :: OmLayer (config :: Config) _ _ _
         _proofOfDeduplication = combineRequirements loggerLayer databaseLayer
 
       Console.log "✓ PROOF OF CONCEPT SUCCESS!"
@@ -78,7 +78,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       let
         -- Manually construct a combined layer that shows both "components"
         -- accessing the same shared context (with deduplicated requirements)
-        combinedLayer :: OmLayer (config :: Config, accessLog :: Ref.Ref String) (logger :: Logger, database :: Database) ()
+        combinedLayer :: OmLayer (config :: Config, accessLog :: Ref.Ref String) (logger :: Logger, database :: Database) () _
         combinedLayer = makeLayer do
           -- Get the shared context - note the type signature shows it's deduplicated!
           { config, accessLog: log } <- Om.ask
@@ -131,22 +131,22 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "runs finalizers in reverse order on success" do
       log <- liftEffect $ Ref.new []
       let
-        layerA :: OmLayer (scope :: Scope) (a :: String) ()
+        layerA :: OmLayer (scope :: Scope) (a :: String) () _
         layerA = makeScopedLayer
           (pure { a: "A" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-A" ]) log)
 
-        layerB :: OmLayer (scope :: Scope) (b :: String) ()
+        layerB :: OmLayer (scope :: Scope) (b :: String) () _
         layerB = makeScopedLayer
           (pure { b: "B" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-B" ]) log)
 
-        layerC :: OmLayer (scope :: Scope) (c :: String) ()
+        layerC :: OmLayer (scope :: Scope) (c :: String) () _
         layerC = makeScopedLayer
           (pure { c: "C" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-C" ]) log)
 
-        layerBC :: OmLayer (scope :: Scope) (b :: String, c :: String) ()
+        layerBC :: OmLayer (scope :: Scope) (b :: String, c :: String) () _
         layerBC = combineRequirements layerB layerC
 
         combined = combineRequirements layerA layerBC
@@ -158,7 +158,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "runs finalizers when the callback throws" do
       log <- liftEffect $ Ref.new []
       let
-        layer :: OmLayer (scope :: Scope) (value :: String) ()
+        layer :: OmLayer (scope :: Scope) (value :: String) () _
         layer = makeScopedLayer
           (pure { value: "acquired" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "released" ]) log)
@@ -171,12 +171,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "threads finalizers through vertical composition (provide)" do
       log <- liftEffect $ Ref.new []
       let
-        baseLayer :: OmLayer (scope :: Scope) (base :: String) ()
+        baseLayer :: OmLayer (scope :: Scope) (base :: String) () _
         baseLayer = makeScopedLayer
           (pure { base: "base-value" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-base" ]) log)
 
-        upperLayer :: OmLayer (scope :: Scope, base :: String) (upper :: String) ()
+        upperLayer :: OmLayer (scope :: Scope, base :: String) (upper :: String) () _
         upperLayer = makeScopedLayer
           ( do
               { base } <- Om.ask
@@ -210,12 +210,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "combines scoped and non-scoped layers" do
       log <- liftEffect $ Ref.new []
       let
-        scopedLayer :: OmLayer (scope :: Scope) (scoped :: String) ()
+        scopedLayer :: OmLayer (scope :: Scope) (scoped :: String) () _
         scopedLayer = makeScopedLayer
           (pure { scoped: "yes" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-scoped" ]) log)
 
-        plainLayer :: OmLayer () (plain :: String) ()
+        plainLayer :: OmLayer () (plain :: String) () _
         plainLayer = makeLayer (pure { plain: "no-finalizer" })
 
         combined = combineRequirements scopedLayer plainLayer
@@ -231,24 +231,24 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "builds a memoized layer only once even when used twice" do
       counter <- liftEffect $ Ref.new 0
       let
-        expensiveLayer :: OmLayer (scope :: Scope) (value :: String) ()
+        expensiveLayer :: OmLayer (scope :: Scope) (value :: String) () _
         expensiveLayer = memoized (Proxy :: Proxy "expensive") $ makeLayer do
           liftEffect $ Ref.modify_ (_ + 1) counter
           pure { value: "built" }
 
         -- Both branches independently provide expensiveLayer
-        branch1 :: OmLayer (scope :: Scope) (out1 :: String) ()
+        branch1 :: OmLayer (scope :: Scope) (out1 :: String) () _
         branch1 = consumer1 `provide` expensiveLayer
           where
-          consumer1 :: OmLayer (scope :: Scope, value :: String) (out1 :: String) ()
+          consumer1 :: OmLayer (scope :: Scope, value :: String) (out1 :: String) () _
           consumer1 = makeLayer do
             { value } <- Om.ask
             pure { out1: value <> "-1" }
 
-        branch2 :: OmLayer (scope :: Scope) (out2 :: String) ()
+        branch2 :: OmLayer (scope :: Scope) (out2 :: String) () _
         branch2 = consumer2 `provide` expensiveLayer
           where
-          consumer2 :: OmLayer (scope :: Scope, value :: String) (out2 :: String) ()
+          consumer2 :: OmLayer (scope :: Scope, value :: String) (out2 :: String) () _
           consumer2 = makeLayer do
             { value } <- Om.ask
             pure { out2: value <> "-2" }
@@ -264,24 +264,24 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "memoized scoped layer runs finalizer only once" do
       log <- liftEffect $ Ref.new []
       let
-        dbLayer :: OmLayer (scope :: Scope) (db :: String) ()
+        dbLayer :: OmLayer (scope :: Scope) (db :: String) () _
         dbLayer = memoized (Proxy :: Proxy "db") $ makeScopedLayer
           (pure { db: "connected" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "db-closed" ]) log)
 
         -- Both branches independently provide dbLayer
-        repoBranch :: OmLayer (scope :: Scope) (repo :: String) ()
+        repoBranch :: OmLayer (scope :: Scope) (repo :: String) () _
         repoBranch = repo `provide` dbLayer
           where
-          repo :: OmLayer (scope :: Scope, db :: String) (repo :: String) ()
+          repo :: OmLayer (scope :: Scope, db :: String) (repo :: String) () _
           repo = makeLayer do
             { db } <- Om.ask
             pure { repo: db <> "-repo" }
 
-        analyticsBranch :: OmLayer (scope :: Scope) (analytics :: String) ()
+        analyticsBranch :: OmLayer (scope :: Scope) (analytics :: String) () _
         analyticsBranch = analytics `provide` dbLayer
           where
-          analytics :: OmLayer (scope :: Scope, db :: String) (analytics :: String) ()
+          analytics :: OmLayer (scope :: Scope, db :: String) (analytics :: String) () _
           analytics = makeLayer do
             { db } <- Om.ask
             pure { analytics: db <> "-analytics" }
