@@ -16,7 +16,7 @@ import Test.Spec.Runner (runSpec)
 import Data.Either (Either(..))
 import Data.Variant (match)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, fresh, combineRequirements, runLayer, runScoped, withScoped, provide)
+import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, fresh, combineRequirements, runLayer, runScoped, runScopedWith, withScoped, provide)
 
 -- Example types
 type Config = { port :: Int, host :: String }
@@ -405,3 +405,57 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
               }
           msg `shouldEqual` "base failed"
         Right _ -> "should have failed" `shouldEqual` "but succeeded"
+
+    it "scoped layers with errors run via runScopedWith" do
+      log <- liftEffect $ Ref.new []
+      let
+        dbLayer :: OmLayer (scope :: Scope) (db :: String) (dbError :: String)
+        dbLayer = makeScopedLayer
+          (pure { db: "connected" })
+          (\_ -> liftEffect $ Ref.modify_ (_ <> [ "db-closed" ]) log)
+
+        cacheLayer :: OmLayer (scope :: Scope) (cache :: String) (cacheError :: String)
+        cacheLayer = makeScopedLayer
+          (pure { cache: "ready" })
+          (\_ -> liftEffect $ Ref.modify_ (_ <> [ "cache-closed" ]) log)
+
+        combined = combineRequirements dbLayer cacheLayer
+
+      let
+        handlers =
+          { exception: \_ -> pure { db: "", cache: "" }
+          , dbError: \_ -> pure { db: "", cache: "" }
+          , cacheError: \_ -> pure { db: "", cache: "" }
+          }
+      result <- liftAff $ runScopedWith handlers combined
+      result.db `shouldEqual` "connected"
+      result.cache `shouldEqual` "ready"
+      finalLog <- liftEffect $ Ref.read log
+      finalLog `shouldEqual` [ "cache-closed", "db-closed" ]
+
+    it "scoped layer error triggers finalizers" do
+      log <- liftEffect $ Ref.new []
+      let
+        goodLayer :: OmLayer (scope :: Scope) (good :: String) ()
+        goodLayer = makeScopedLayer
+          (pure { good: "ok" })
+          (\_ -> liftEffect $ Ref.modify_ (_ <> [ "good-closed" ]) log)
+
+        failLayer :: OmLayer (scope :: Scope) (bad :: String) (buildError :: String)
+        failLayer = makeScopedLayer
+          (Om.throw { buildError: "build failed" })
+          (\_ -> liftEffect $ Ref.modify_ (_ <> [ "bad-closed" ]) log)
+
+        combined = combineRequirements goodLayer failLayer
+
+      let
+        handlers =
+          { exception: \_ -> pure { good: "", bad: "" }
+          , buildError: \_ -> pure { good: "", bad: "" }
+          }
+      result <- liftAff $ try $ runScopedWith handlers combined
+      case result of
+        Right r -> r.good `shouldEqual` ""
+        Left _ -> pure unit
+      finalLog <- liftEffect $ Ref.read log
+      finalLog `shouldEqual` [ "good-closed" ]

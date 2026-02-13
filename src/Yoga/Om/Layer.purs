@@ -9,7 +9,9 @@ module Yoga.Om.Layer
   , fresh
   , runLayer
   , runScoped
+  , runScopedWith
   , withScoped
+  , withScopedWith
   , combineRequirements
   , provide
   , (>->)
@@ -26,9 +28,11 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe)
+import Data.Variant (class VariantMatchCases)
 import Effect (Effect)
 import Effect.Aff (Aff, bracket)
 import Effect.Class (liftEffect)
+import Effect.Exception (Error)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
 import Effect.Unsafe (unsafePerformEffect)
@@ -268,6 +272,7 @@ runLayer _ctx layer = widenCtx (buildLayer layer)
 
 -- | Build a fully-provided scoped layer, return the provisions.
 -- | All finalizers run after the provisions are returned.
+-- | For layers with typed errors, use `runScopedWith`.
 runScoped
   :: forall prov
    . OmLayer (scope :: Scope) prov ()
@@ -278,17 +283,41 @@ runScoped layer = withScoped layer pure
 -- | A fresh `Scope` is created and closed when the callback completes,
 -- | running all finalizers in reverse order — whether by success, failure,
 -- | or interruption.
+-- | For layers with typed errors, use `withScopedWith`.
 withScoped
   :: forall prov a
    . OmLayer (scope :: Scope) prov ()
   -> (Record prov -> Aff a)
   -> Aff a
-withScoped layer callback = bracket acquire release use
+withScoped = withScopedWith { exception: \_ -> pure (unsafeCoerce {}) }
+
+-- | Like `runScoped` but accepts error handlers for layers with typed errors.
+runScopedWith
+  :: forall prov r rl err_ err
+   . RowToList (exception :: Error -> Aff (Record prov) | r) rl
+  => VariantMatchCases rl err_ (Aff (Record prov))
+  => Union err_ () (exception :: Error | err)
+  => { exception :: Error -> Aff (Record prov) | r }
+  -> OmLayer (scope :: Scope) prov err
+  -> Aff (Record prov)
+runScopedWith handlers layer = withScopedWith handlers layer pure
+
+-- | Like `withScoped` but accepts error handlers for layers with typed errors.
+withScopedWith
+  :: forall prov a r rl err_ err
+   . RowToList (exception :: Error -> Aff (Record prov) | r) rl
+  => VariantMatchCases rl err_ (Aff (Record prov))
+  => Union err_ () (exception :: Error | err)
+  => { exception :: Error -> Aff (Record prov) | r }
+  -> OmLayer (scope :: Scope) prov err
+  -> (Record prov -> Aff a)
+  -> Aff a
+withScopedWith handlers layer callback = bracket acquire release use
   where
   acquire = do
     scope <- newScope # liftEffect
     let om = buildLayer layer
-    prov <- Om.runOm { scope } { exception: \_ -> pure (unsafeCoerce {}) } om
+    prov <- Om.runOm { scope } handlers om
     pure { scope, prov }
   release { scope } = closeScope scope
   use { prov } = callback prov
