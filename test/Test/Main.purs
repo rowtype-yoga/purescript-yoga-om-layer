@@ -293,3 +293,39 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       result.analytics `shouldEqual` "connected-analytics"
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "db-closed" ]
+
+    it "memoized bracketLayer acquires and releases only once" do
+      log <- liftEffect $ Ref.new []
+      let
+        connLayer :: OmLayer (scope :: Scope) (conn :: Int) () _
+        connLayer = memoized (Proxy :: Proxy "conn") $ bracketLayer
+          ( do
+              liftEffect $ Ref.modify_ (_ <> [ "acquire" ]) log
+              pure 42
+          )
+          (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release" ]) log)
+          (\n -> pure { conn: n })
+
+        branch1 :: OmLayer (scope :: Scope) (x :: String) () _
+        branch1 = upper `provide` connLayer
+          where
+          upper :: OmLayer (scope :: Scope, conn :: Int) (x :: String) () _
+          upper = makeLayer do
+            { conn } <- Om.ask
+            pure { x: show conn }
+
+        branch2 :: OmLayer (scope :: Scope) (y :: String) () _
+        branch2 = upper `provide` connLayer
+          where
+          upper :: OmLayer (scope :: Scope, conn :: Int) (y :: String) () _
+          upper = makeLayer do
+            { conn } <- Om.ask
+            pure { y: show (conn + 1) }
+
+        app = combineRequirements branch1 branch2
+
+      result <- liftAff $ runScoped app
+      result.x `shouldEqual` "42"
+      result.y `shouldEqual` "43"
+      finalLog <- liftEffect $ Ref.read log
+      finalLog `shouldEqual` [ "acquire", "release" ]
