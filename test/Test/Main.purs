@@ -2,6 +2,7 @@ module Test.Main where
 
 import Prelude
 
+import Control.Parallel (parApply)
 import Effect (Effect)
 import Effect.Aff (launchAff_, throwError, try)
 import Effect.Aff.Class (liftAff)
@@ -29,12 +30,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
     it "proves Row.Nub deduplicates shared requirements at type level" do
       let
-        loggerLayer :: OmLayer (config :: Config) (logger :: Logger) ()
+        loggerLayer :: OmLayer (config :: Config) () { logger :: Logger }
         loggerLayer = makeLayer do
           { config } <- Om.ask
           pure { logger: { log: \msg -> Console.log $ "[" <> config.host <> "] " <> msg } }
 
-        databaseLayer :: OmLayer (config :: Config) (database :: Database) ()
+        databaseLayer :: OmLayer (config :: Config) () { database :: Database }
         databaseLayer = makeLayer do
           { config } <- Om.ask
           pure { database: { query: \q -> pure [ "Result from " <> config.host ] } }
@@ -49,7 +50,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "proves deduplication at runtime via shared Ref" do
       accessLog <- liftEffect $ Ref.new ""
       let
-        combinedLayer :: OmLayer (config :: Config, accessLog :: Ref.Ref String) (logger :: Logger, database :: Database) ()
+        combinedLayer :: OmLayer (config :: Config, accessLog :: Ref.Ref String) () { logger :: Logger, database :: Database }
         combinedLayer = makeLayer do
           { config, accessLog: log } <- Om.ask
           liftEffect $ Ref.modify_ (_ <> "config-accessed-by-logger ") log
@@ -79,22 +80,22 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "runs finalizers in reverse order on success" do
       log <- liftEffect $ Ref.new []
       let
-        layerA :: OmLayer (scope :: Scope) (a :: String) ()
+        layerA :: OmLayer (scope :: Scope) () { a :: String }
         layerA = makeScopedLayer
           (pure { a: "A" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-A" ]) log)
 
-        layerB :: OmLayer (scope :: Scope) (b :: String) ()
+        layerB :: OmLayer (scope :: Scope) () { b :: String }
         layerB = makeScopedLayer
           (pure { b: "B" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-B" ]) log)
 
-        layerC :: OmLayer (scope :: Scope) (c :: String) ()
+        layerC :: OmLayer (scope :: Scope) () { c :: String }
         layerC = makeScopedLayer
           (pure { c: "C" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-C" ]) log)
 
-        layerBC :: OmLayer (scope :: Scope) (b :: String, c :: String) ()
+        layerBC :: OmLayer (scope :: Scope) () { b :: String, c :: String }
         layerBC = combineRequirements layerB layerC
 
         combined = combineRequirements layerA layerBC
@@ -106,7 +107,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "runs finalizers when the callback throws" do
       log <- liftEffect $ Ref.new []
       let
-        layer :: OmLayer (scope :: Scope) (value :: String) ()
+        layer :: OmLayer (scope :: Scope) () { value :: String }
         layer = makeScopedLayer
           (pure { value: "acquired" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "released" ]) log)
@@ -119,12 +120,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "threads finalizers through vertical composition (provide)" do
       log <- liftEffect $ Ref.new []
       let
-        baseLayer :: OmLayer (scope :: Scope) (base :: String) ()
+        baseLayer :: OmLayer (scope :: Scope) () { base :: String }
         baseLayer = makeScopedLayer
           (pure { base: "base-value" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-base" ]) log)
 
-        upperLayer :: OmLayer (scope :: Scope, base :: String) (upper :: String) ()
+        upperLayer :: OmLayer (scope :: Scope, base :: String) () { upper :: String }
         upperLayer = makeScopedLayer
           ( do
               { base } <- Om.ask
@@ -158,23 +159,23 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "fresh layer builds twice even when same base layer" do
       counter <- liftEffect $ Ref.new 0
       let
-        baseLayer :: OmLayer (scope :: Scope) (value :: String) ()
+        baseLayer :: OmLayer (scope :: Scope) () { value :: String }
         baseLayer = makeLayer do
           liftEffect $ Ref.modify_ (_ + 1) counter
           pure { value: "built" }
 
-        branch1 :: OmLayer (scope :: Scope) (out1 :: String) ()
+        branch1 :: OmLayer (scope :: Scope) () { out1 :: String }
         branch1 = consumer `provide` fresh baseLayer
           where
-          consumer :: OmLayer (scope :: Scope, value :: String) (out1 :: String) ()
+          consumer :: OmLayer (scope :: Scope, value :: String) () { out1 :: String }
           consumer = makeLayer do
             { value } <- Om.ask
             pure { out1: value <> "-1" }
 
-        branch2 :: OmLayer (scope :: Scope) (out2 :: String) ()
+        branch2 :: OmLayer (scope :: Scope) () { out2 :: String }
         branch2 = consumer `provide` fresh baseLayer
           where
-          consumer :: OmLayer (scope :: Scope, value :: String) (out2 :: String) ()
+          consumer :: OmLayer (scope :: Scope, value :: String) () { out2 :: String }
           consumer = makeLayer do
             { value } <- Om.ask
             pure { out2: value <> "-2" }
@@ -190,12 +191,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "combines scoped and non-scoped layers" do
       log <- liftEffect $ Ref.new []
       let
-        scopedLayer :: OmLayer (scope :: Scope) (scoped :: String) ()
+        scopedLayer :: OmLayer (scope :: Scope) () { scoped :: String }
         scopedLayer = makeScopedLayer
           (pure { scoped: "yes" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-scoped" ]) log)
 
-        plainLayer :: OmLayer () (plain :: String) ()
+        plainLayer :: OmLayer () () { plain :: String }
         plainLayer = makeLayer (pure { plain: "no-finalizer" })
 
         combined = combineRequirements scopedLayer plainLayer
@@ -211,23 +212,23 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "builds the same layer only once when used in two branches" do
       counter <- liftEffect $ Ref.new 0
       let
-        expensiveLayer :: OmLayer (scope :: Scope) (value :: String) ()
+        expensiveLayer :: OmLayer (scope :: Scope) () { value :: String }
         expensiveLayer = makeLayer do
           liftEffect $ Ref.modify_ (_ + 1) counter
           pure { value: "built" }
 
-        branch1 :: OmLayer (scope :: Scope) (out1 :: String) ()
+        branch1 :: OmLayer (scope :: Scope) () { out1 :: String }
         branch1 = consumer `provide` expensiveLayer
           where
-          consumer :: OmLayer (scope :: Scope, value :: String) (out1 :: String) ()
+          consumer :: OmLayer (scope :: Scope, value :: String) () { out1 :: String }
           consumer = makeLayer do
             { value } <- Om.ask
             pure { out1: value <> "-1" }
 
-        branch2 :: OmLayer (scope :: Scope) (out2 :: String) ()
+        branch2 :: OmLayer (scope :: Scope) () { out2 :: String }
         branch2 = consumer `provide` expensiveLayer
           where
-          consumer :: OmLayer (scope :: Scope, value :: String) (out2 :: String) ()
+          consumer :: OmLayer (scope :: Scope, value :: String) () { out2 :: String }
           consumer = makeLayer do
             { value } <- Om.ask
             pure { out2: value <> "-2" }
@@ -243,23 +244,23 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "memoized scoped layer runs finalizer only once" do
       log <- liftEffect $ Ref.new []
       let
-        dbLayer :: OmLayer (scope :: Scope) (db :: String) ()
+        dbLayer :: OmLayer (scope :: Scope) () { db :: String }
         dbLayer = makeScopedLayer
           (pure { db: "connected" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "db-closed" ]) log)
 
-        repoBranch :: OmLayer (scope :: Scope) (repo :: String) ()
+        repoBranch :: OmLayer (scope :: Scope) () { repo :: String }
         repoBranch = repo `provide` dbLayer
           where
-          repo :: OmLayer (scope :: Scope, db :: String) (repo :: String) ()
+          repo :: OmLayer (scope :: Scope, db :: String) () { repo :: String }
           repo = makeLayer do
             { db } <- Om.ask
             pure { repo: db <> "-repo" }
 
-        analyticsBranch :: OmLayer (scope :: Scope) (analytics :: String) ()
+        analyticsBranch :: OmLayer (scope :: Scope) () { analytics :: String }
         analyticsBranch = analytics `provide` dbLayer
           where
-          analytics :: OmLayer (scope :: Scope, db :: String) (analytics :: String) ()
+          analytics :: OmLayer (scope :: Scope, db :: String) () { analytics :: String }
           analytics = makeLayer do
             { db } <- Om.ask
             pure { analytics: db <> "-analytics" }
@@ -275,7 +276,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "memoized bracketLayer acquires and releases only once" do
       log <- liftEffect $ Ref.new []
       let
-        connLayer :: OmLayer (scope :: Scope) (conn :: Int) ()
+        connLayer :: OmLayer (scope :: Scope) () { conn :: Int }
         connLayer = bracketLayer
           ( do
               liftEffect $ Ref.modify_ (_ <> [ "acquire" ]) log
@@ -284,18 +285,18 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release" ]) log)
           (\n -> pure { conn: n })
 
-        branch1 :: OmLayer (scope :: Scope) (x :: String) ()
+        branch1 :: OmLayer (scope :: Scope) () { x :: String }
         branch1 = upper `provide` connLayer
           where
-          upper :: OmLayer (scope :: Scope, conn :: Int) (x :: String) ()
+          upper :: OmLayer (scope :: Scope, conn :: Int) () { x :: String }
           upper = makeLayer do
             { conn } <- Om.ask
             pure { x: show conn }
 
-        branch2 :: OmLayer (scope :: Scope) (y :: String) ()
+        branch2 :: OmLayer (scope :: Scope) () { y :: String }
         branch2 = upper `provide` connLayer
           where
-          upper :: OmLayer (scope :: Scope, conn :: Int) (y :: String) ()
+          upper :: OmLayer (scope :: Scope, conn :: Int) () { y :: String }
           upper = makeLayer do
             { conn } <- Om.ask
             pure { y: show (conn + 1) }
@@ -312,15 +313,15 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
     it "composes layers with different error types" do
       let
-        dbLayer :: OmLayer () (db :: String) (dbError :: String)
+        dbLayer :: OmLayer () (dbError :: String) { db :: String }
         dbLayer = makeLayer do
           pure { db: "connected" }
 
-        cacheLayer :: OmLayer () (cache :: String) (cacheError :: String)
+        cacheLayer :: OmLayer () (cacheError :: String) { cache :: String }
         cacheLayer = makeLayer do
           pure { cache: "ready" }
 
-        combined :: OmLayer () (db :: String, cache :: String) (dbError :: String, cacheError :: String)
+        combined :: OmLayer () (dbError :: String, cacheError :: String) { db :: String, cache :: String }
         combined = combineRequirements dbLayer cacheLayer
 
       result <- Om.runOm {}
@@ -334,11 +335,11 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
     it "propagates errors from the first layer" do
       let
-        failingLayer :: OmLayer () (db :: String) (dbError :: String)
+        failingLayer :: OmLayer () (dbError :: String) { db :: String }
         failingLayer = makeLayer do
           Om.throw { dbError: "connection refused" }
 
-        okLayer :: OmLayer () (cache :: String) ()
+        okLayer :: OmLayer () () { cache :: String }
         okLayer = makeLayer do
           pure { cache: "ready" }
 
@@ -358,11 +359,11 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
     it "propagates errors from the second layer" do
       let
-        okLayer :: OmLayer () (db :: String) ()
+        okLayer :: OmLayer () () { db :: String }
         okLayer = makeLayer do
           pure { db: "connected" }
 
-        failingLayer :: OmLayer () (cache :: String) (cacheError :: String)
+        failingLayer :: OmLayer () (cacheError :: String) { cache :: String }
         failingLayer = makeLayer do
           Om.throw { cacheError: "cache unavailable" }
 
@@ -382,11 +383,11 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
     it "propagates errors through vertical composition" do
       let
-        baseLayer :: OmLayer () (base :: String) (baseError :: String)
+        baseLayer :: OmLayer () (baseError :: String) { base :: String }
         baseLayer = makeLayer do
           Om.throw { baseError: "base failed" }
 
-        upperLayer :: OmLayer (base :: String) (upper :: String) (upperError :: String)
+        upperLayer :: OmLayer (base :: String) (upperError :: String) { upper :: String }
         upperLayer = makeLayer do
           { base } <- Om.ask
           pure { upper: base <> "-extended" }
@@ -409,12 +410,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "scoped layers with errors run via runScopedWith" do
       log <- liftEffect $ Ref.new []
       let
-        dbLayer :: OmLayer (scope :: Scope) (db :: String) (dbError :: String)
+        dbLayer :: OmLayer (scope :: Scope) (dbError :: String) { db :: String }
         dbLayer = makeScopedLayer
           (pure { db: "connected" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "db-closed" ]) log)
 
-        cacheLayer :: OmLayer (scope :: Scope) (cache :: String) (cacheError :: String)
+        cacheLayer :: OmLayer (scope :: Scope) (cacheError :: String) { cache :: String }
         cacheLayer = makeScopedLayer
           (pure { cache: "ready" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "cache-closed" ]) log)
@@ -436,12 +437,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "scoped layer error triggers finalizers" do
       log <- liftEffect $ Ref.new []
       let
-        goodLayer :: OmLayer (scope :: Scope) (good :: String) ()
+        goodLayer :: OmLayer (scope :: Scope) () { good :: String }
         goodLayer = makeScopedLayer
           (pure { good: "ok" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "good-closed" ]) log)
 
-        failLayer :: OmLayer (scope :: Scope) (bad :: String) (buildError :: String)
+        failLayer :: OmLayer (scope :: Scope) (buildError :: String) { bad :: String }
         failLayer = makeScopedLayer
           (Om.throw { buildError: "build failed" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "bad-closed" ]) log)
@@ -459,3 +460,59 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
         Left _ -> pure unit
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "good-closed" ]
+
+  describe "Functor / Apply / Bind" do
+
+    it "maps over layer output" do
+      let
+        layer :: OmLayer () () { value :: Int }
+        layer = makeLayer (pure { value: 10 })
+
+        mapped = layer <#> \r -> { doubled: r.value * 2 }
+
+      result <- Om.runOm {} { exception: \_ -> pure { doubled: 0 } } (runLayer {} mapped)
+      result.doubled `shouldEqual` 20
+
+    it "applies two layers" do
+      let
+        fLayer :: OmLayer () () ({ a :: Int } -> { a :: Int, b :: String })
+        fLayer = makeLayer (pure \r -> { a: r.a, b: show r.a })
+
+        aLayer :: OmLayer () () { a :: Int }
+        aLayer = makeLayer (pure { a: 42 })
+
+      result <- Om.runOm {} { exception: \_ -> pure { a: 0, b: "" } } (runLayer {} (fLayer <*> aLayer))
+      result.a `shouldEqual` 42
+      result.b `shouldEqual` "42"
+
+    it "binds layers sequentially" do
+      let
+        layer = do
+          r <- makeLayer (pure { x: 5 }) :: OmLayer () () { x :: Int }
+          makeLayer (pure { result: r.x + 10 })
+
+      result <- Om.runOm {} { exception: \_ -> pure { result: 0 } } (runLayer {} layer)
+      result.result `shouldEqual` 15
+
+  describe "Parallel" do
+
+    it "runs layers in parallel via parApply" do
+      log <- liftEffect $ Ref.new []
+      let
+        layerA :: OmLayer () () { a :: String }
+        layerA = makeLayer do
+          liftEffect $ Ref.modify_ (_ <> [ "a" ]) log
+          pure { a: "A" }
+
+        layerB :: OmLayer () () { b :: String }
+        layerB = makeLayer do
+          liftEffect $ Ref.modify_ (_ <> [ "b" ]) log
+          pure { b: "B" }
+
+        combined = parApply (map (\ra rb -> { a: ra.a, b: rb.b }) layerA) layerB
+
+      result <- Om.runOm {} { exception: \_ -> pure { a: "", b: "" } } (runLayer {} combined)
+      result.a `shouldEqual` "A"
+      result.b `shouldEqual` "B"
+      finalLog <- liftEffect $ Ref.read log
+      finalLog `shouldEqual` [ "a", "b" ]

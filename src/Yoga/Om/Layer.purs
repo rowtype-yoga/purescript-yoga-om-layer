@@ -1,6 +1,7 @@
 -- @inline export runLayer arity=2
 module Yoga.Om.Layer
   ( OmLayer
+  , ParOmLayer
   , Scope
   , makeLayer
   , makeScopedLayer
@@ -22,6 +23,8 @@ module Yoga.Om.Layer
 
 import Prelude
 
+import Control.Parallel (class Parallel)
+import Control.Parallel as Parallel
 import Data.Array as Array
 import Data.Foldable (for_)
 import Data.Map (Map)
@@ -43,7 +46,7 @@ import Record as Record
 import Record.Studio (class Keys)
 import Type.Equality (class TypeEquals)
 import Unsafe.Coerce (unsafeCoerce)
-import Yoga.Om (Om)
+import Yoga.Om (Om, ParOm)
 import Yoga.Om as Om
 
 -- =============================================================================
@@ -102,9 +105,49 @@ freshId _ = unsafePerformEffect nextId
 -- OmLayer
 -- =============================================================================
 
--- | A layer that requires dependencies (req) and provides services (prov).
+-- | A layer that requires dependencies (req), may fail with (err),
+-- | and produces a value (typically Record prov).
 -- | Each layer has a unique identity used for automatic memoization within a Scope.
-data OmLayer req prov err = OmLayer Int (Om (Record req) err (Record prov))
+data OmLayer req err a = OmLayer Int (Om (Record req) err a)
+
+-- =============================================================================
+-- ParOmLayer — parallel counterpart
+-- =============================================================================
+
+data ParOmLayer req err a = ParOmLayer (ParOm (Record req) err a)
+
+-- =============================================================================
+-- Instances
+-- =============================================================================
+
+instance Functor (OmLayer req err) where
+  map f layer = OmLayer (freshId unit) (map f (buildLayer layer))
+
+instance Apply (OmLayer req err) where
+  apply f a = OmLayer (freshId unit) (apply (buildLayer f) (buildLayer a))
+
+instance Applicative (OmLayer req err) where
+  pure a = OmLayer (freshId unit) (pure a)
+
+instance Bind (OmLayer req err) where
+  bind layer f = OmLayer (freshId unit) do
+    a <- buildLayer layer
+    buildLayer (f a)
+
+instance Monad (OmLayer req err)
+
+instance Functor (ParOmLayer req err) where
+  map f (ParOmLayer p) = ParOmLayer (map f p)
+
+instance Apply (ParOmLayer req err) where
+  apply (ParOmLayer f) (ParOmLayer a) = ParOmLayer (apply f a)
+
+instance Applicative (ParOmLayer req err) where
+  pure a = ParOmLayer (pure a)
+
+instance Parallel (ParOmLayer req err) (OmLayer req err) where
+  parallel (OmLayer _ om) = ParOmLayer (Parallel.parallel om)
+  sequential (ParOmLayer p) = OmLayer (freshId unit) (Parallel.sequential p)
 
 -- =============================================================================
 -- Automatic memoization
@@ -113,7 +156,7 @@ data OmLayer req prov err = OmLayer Int (Om (Record req) err (Record prov))
 -- | Wrap an Om computation with cache logic.
 -- | If a scope is available in the context, checks/populates the cache by layer ID.
 -- | If no scope is present, runs the computation directly.
-withCache :: forall req prov err. Int -> Om (Record req) err (Record prov) -> Om (Record req) err (Record prov)
+withCache :: forall req err a. Int -> Om (Record req) err a -> Om (Record req) err a
 withCache layerId om = do
   ctx <- Om.ask
   case toMaybe (tryGetScope ctx) of
@@ -134,11 +177,11 @@ withCache layerId om = do
 -- | Create a layer from an Om computation.
 -- | The layer is automatically memoized within a Scope — the same layer value
 -- | used in multiple branches of a dependency graph builds only once.
-makeLayer :: forall req prov err. Om (Record req) err (Record prov) -> OmLayer req prov err
+makeLayer :: forall req err a. Om (Record req) err a -> OmLayer req err a
 makeLayer om = OmLayer (freshId unit) om
 
 -- | Extract the Om from a layer, wrapped with cache logic.
-buildLayer :: forall req prov err. OmLayer req prov err -> Om (Record req) err (Record prov)
+buildLayer :: forall req err a. OmLayer req err a -> Om (Record req) err a
 buildLayer (OmLayer layerId om) = withCache layerId om
 
 -- | Create a scoped layer with acquire/release semantics.
@@ -148,7 +191,7 @@ makeScopedLayer
   :: forall req prov err
    . Om { scope :: Scope | req } err (Record prov)
   -> (Record prov -> Aff Unit)
-  -> OmLayer (scope :: Scope | req) prov err
+  -> OmLayer (scope :: Scope | req) err (Record prov)
 makeScopedLayer acquire release = makeLayer do
   acquireRelease acquire release
 
@@ -159,7 +202,7 @@ bracketLayer
    . Om { scope :: Scope | req } err resource
   -> (resource -> Aff Unit)
   -> (resource -> Om { scope :: Scope | req } err (Record prov))
-  -> OmLayer (scope :: Scope | req) prov err
+  -> OmLayer (scope :: Scope | req) err (Record prov)
 bracketLayer acquire release use = makeLayer do
   resource <- acquireRelease acquire (\r -> release r)
   use resource
@@ -181,7 +224,7 @@ acquireRelease acquire release = do
 -- | Create a fresh (non-memoized) copy of a layer.
 -- | The new layer has a unique identity and will always build independently,
 -- | even within the same scope.
-fresh :: forall req prov err. OmLayer req prov err -> OmLayer req prov err
+fresh :: forall req err a. OmLayer req err a -> OmLayer req err a
 fresh (OmLayer _ om) = OmLayer (freshId unit) om
 
 -- =============================================================================
@@ -260,14 +303,14 @@ else instance
 
 -- | Run a layer with a given context, with custom error if requirements aren't met.
 runLayer
-  :: forall req prov err available
+  :: forall req err a available
    . CheckAllProvided req available
   => Record available
-  -> OmLayer req prov err
-  -> Om (Record available) err (Record prov)
+  -> OmLayer req err a
+  -> Om (Record available) err a
 runLayer _ctx layer = widenCtx (buildLayer layer)
   where
-  widenCtx :: Om (Record req) err (Record prov) -> Om (Record available) err (Record prov)
+  widenCtx :: Om (Record req) err a -> Om (Record available) err a
   widenCtx = unsafeCoerce
 
 -- | Build a fully-provided scoped layer, return the provisions.
@@ -275,7 +318,7 @@ runLayer _ctx layer = widenCtx (buildLayer layer)
 -- | For layers with typed errors, use `runScopedWith`.
 runScoped
   :: forall prov
-   . OmLayer (scope :: Scope) prov ()
+   . OmLayer (scope :: Scope) () (Record prov)
   -> Aff (Record prov)
 runScoped layer = withScoped layer pure
 
@@ -286,7 +329,7 @@ runScoped layer = withScoped layer pure
 -- | For layers with typed errors, use `withScopedWith`.
 withScoped
   :: forall prov a
-   . OmLayer (scope :: Scope) prov ()
+   . OmLayer (scope :: Scope) () (Record prov)
   -> (Record prov -> Aff a)
   -> Aff a
 withScoped = withScopedWith { exception: \_ -> pure (unsafeCoerce {}) }
@@ -298,7 +341,7 @@ runScopedWith
   => VariantMatchCases rl err_ (Aff (Record prov))
   => Union err_ () (exception :: Error | err)
   => { exception :: Error -> Aff (Record prov) | r }
-  -> OmLayer (scope :: Scope) prov err
+  -> OmLayer (scope :: Scope) err (Record prov)
   -> Aff (Record prov)
 runScopedWith handlers layer = withScopedWith handlers layer pure
 
@@ -309,7 +352,7 @@ withScopedWith
   => VariantMatchCases rl err_ (Aff (Record prov))
   => Union err_ () (exception :: Error | err)
   => { exception :: Error -> Aff (Record prov) | r }
-  -> OmLayer (scope :: Scope) prov err
+  -> OmLayer (scope :: Scope) err (Record prov)
   -> (Record prov -> Aff a)
   -> Aff a
 withScopedWith handlers layer callback = bracket acquire release use
@@ -340,9 +383,9 @@ combineRequirements
   => Nub provMergedRaw provMerged
   => Keys req1
   => Keys req2
-  => OmLayer req1 prov1 err1
-  -> OmLayer req2 prov2 err2
-  -> OmLayer reqDeduped provMerged errDeduped
+  => OmLayer req1 err1 (Record prov1)
+  -> OmLayer req2 err2 (Record prov2)
+  -> OmLayer reqDeduped errDeduped (Record provMerged)
 combineRequirements layer1 layer2 = OmLayer (freshId unit) do
   rec1 <- Om.expand (buildLayer layer1)
   rec2 <- Om.expand (buildLayer layer2)
@@ -366,9 +409,9 @@ provide
   => Keys req
   => Keys prov1
   => Keys req2
-  => OmLayer req2 prov2 err2
-  -> OmLayer req prov1 err1
-  -> OmLayer req prov2 errDeduped
+  => OmLayer req2 err2 (Record prov2)
+  -> OmLayer req err1 (Record prov1)
+  -> OmLayer req errDeduped (Record prov2)
 provide l2 l1 = OmLayer (freshId unit) do
   prov1 <- Om.expand (buildLayer l1)
   Om.expand (buildLayer l2) # Om.widenCtx prov1

@@ -24,22 +24,22 @@ type Cache = { get :: String -> Effect (Maybe String) }
 type CacheL r = (cache :: Cache | r)
 type CacheL_ = CacheL ()
 
-loggerLayer :: OmLayer ConfigL_ LoggerL_ ()
+loggerLayer :: OmLayer ConfigL_ () { logger :: Logger }
 loggerLayer = makeLayer do
   { config } <- Om.ask
   pure { logger: { log: \msg -> pure unit } }
 
-databaseLayer :: OmLayer ConfigL_ DatabaseL_ ()
+databaseLayer :: OmLayer ConfigL_ () { database :: Database }
 databaseLayer = makeLayer do
   { config } <- Om.ask
   pure { database: { query: \q -> pure [] } }
 
-cacheLayer :: OmLayer (LoggerL + DatabaseL_) CacheL_ ()
+cacheLayer :: OmLayer (LoggerL + DatabaseL_) () { cache :: Cache }
 cacheLayer = makeLayer do
   { logger, database } <- Om.ask
   pure { cache: { get: \key -> pure Nothing } }
 
-programLayer :: OmLayer (DatabaseL + CacheL_) () ()
+programLayer :: OmLayer (DatabaseL + CacheL_) () {}
 programLayer = makeLayer do
   pure {}
 
