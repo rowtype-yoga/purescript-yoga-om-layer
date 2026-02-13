@@ -14,7 +14,7 @@ import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runLayer, runScoped, withScoped, provide)
+import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runLayer, runScoped, withScoped, provide)
 
 -- Example types
 type Config = { port :: Int, host :: String }
@@ -130,22 +130,22 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "runs finalizers in reverse order on success" do
       log <- liftEffect $ Ref.new []
       let
-        layerA :: OmLayer () (a :: String) ()
+        layerA :: OmLayer (scope :: Scope) (a :: String) ()
         layerA = makeScopedLayer
           (pure { a: "A" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-A" ]) log)
 
-        layerB :: OmLayer () (b :: String) ()
+        layerB :: OmLayer (scope :: Scope) (b :: String) ()
         layerB = makeScopedLayer
           (pure { b: "B" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-B" ]) log)
 
-        layerC :: OmLayer () (c :: String) ()
+        layerC :: OmLayer (scope :: Scope) (c :: String) ()
         layerC = makeScopedLayer
           (pure { c: "C" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-C" ]) log)
 
-        layerBC :: OmLayer () (b :: String, c :: String) ()
+        layerBC :: OmLayer (scope :: Scope) (b :: String, c :: String) ()
         layerBC = combineRequirements layerB layerC
 
         combined = combineRequirements layerA layerBC
@@ -157,7 +157,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "runs finalizers when the callback throws" do
       log <- liftEffect $ Ref.new []
       let
-        layer :: OmLayer () (value :: String) ()
+        layer :: OmLayer (scope :: Scope) (value :: String) ()
         layer = makeScopedLayer
           (pure { value: "acquired" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "released" ]) log)
@@ -170,12 +170,12 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "threads finalizers through vertical composition (provide)" do
       log <- liftEffect $ Ref.new []
       let
-        baseLayer :: OmLayer () (base :: String) ()
+        baseLayer :: OmLayer (scope :: Scope) (base :: String) ()
         baseLayer = makeScopedLayer
           (pure { base: "base-value" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-base" ]) log)
 
-        upperLayer :: OmLayer (base :: String) (upper :: String) ()
+        upperLayer :: OmLayer (scope :: Scope, base :: String) (upper :: String) ()
         upperLayer = makeScopedLayer
           ( do
               { base } <- Om.ask
@@ -209,7 +209,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
     it "combines scoped and non-scoped layers" do
       log <- liftEffect $ Ref.new []
       let
-        scopedLayer :: OmLayer () (scoped :: String) ()
+        scopedLayer :: OmLayer (scope :: Scope) (scoped :: String) ()
         scopedLayer = makeScopedLayer
           (pure { scoped: "yes" })
           (\_ -> liftEffect $ Ref.modify_ (_ <> [ "release-scoped" ]) log)
