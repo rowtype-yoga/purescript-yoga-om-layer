@@ -16,6 +16,8 @@ module Yoga.Om.Layer
   , combineRequirements
   , provide
   , (>->)
+  , recovering
+  , repeating
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -23,17 +25,19 @@ module Yoga.Om.Layer
 
 import Prelude
 
+import Control.Monad.Error.Class (catchError, throwError)
 import Control.Parallel (class Parallel)
 import Control.Parallel as Parallel
 import Data.Array as Array
 import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Nullable (Nullable, toMaybe)
-import Data.Variant (class VariantMatchCases)
+import Data.Variant (class VariantMatchCases, onMatch)
 import Effect (Effect)
 import Effect.Aff (Aff, bracket)
+import Effect.Aff.Retry (RetryPolicyM, RetryStatus, applyAndDelay, defaultRetryStatus)
 import Effect.Class (liftEffect)
 import Effect.Exception (Error)
 import Effect.Ref (Ref)
@@ -417,3 +421,46 @@ provide l2 l1 = OmLayer (freshId unit) do
   Om.expand (buildLayer l2) # Om.widenCtx prov1
 
 infixl 9 provide as >->
+
+-- =============================================================================
+-- Retry / Repeat on layers
+-- =============================================================================
+
+recovering
+  :: forall req err rest a
+       (handlersRL :: RowList Type)
+       (handlers :: Row Type)
+       (handled :: Row Type)
+   . RowToList handlers handlersRL
+  => VariantMatchCases handlersRL handled (Om (Record req) err Boolean)
+  => Union handled rest (exception :: Error | err)
+  => RetryPolicyM (Om (Record req) err)
+  -> (RetryStatus -> Record handlers)
+  -> OmLayer req err a
+  -> OmLayer req err a
+recovering policy mkChecks (OmLayer layerId om) =
+  OmLayer layerId (go defaultRetryStatus)
+  where
+  go status =
+    catchError om (handleErr status)
+
+  handleErr status variant = do
+    let shouldRetry = variant # onMatch (mkChecks status) (\_ -> pure false)
+    ifM shouldRetry
+      (applyAndDelay policy status >>= maybe (throwError variant) go)
+      (throwError variant)
+
+repeating
+  :: forall req err a
+   . RetryPolicyM (Om (Record req) err)
+  -> (RetryStatus -> a -> Om (Record req) err Boolean)
+  -> OmLayer req err a
+  -> OmLayer req err a
+repeating policy shouldRepeat (OmLayer layerId om) =
+  OmLayer layerId (go defaultRetryStatus)
+  where
+  go status = do
+    result <- om
+    ifM (shouldRepeat status result)
+      (applyAndDelay policy status >>= maybe (pure result) go)
+      (pure result)

@@ -17,7 +17,9 @@ import Test.Spec.Runner (runSpec)
 import Data.Either (Either(..))
 import Data.Variant (match)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, fresh, combineRequirements, runLayer, runScoped, runScopedWith, withScoped, provide)
+import Data.Time.Duration (Milliseconds(..))
+import Effect.Aff.Retry (RetryStatus(..), limitRetries, constantDelay)
+import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, fresh, combineRequirements, runLayer, runScoped, runScopedWith, withScoped, provide, recovering, repeating)
 
 -- Example types
 type Config = { port :: Int, host :: String }
@@ -516,3 +518,101 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       result.b `shouldEqual` "B"
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "a", "b" ]
+
+  describe "Layer recovering" do
+
+    it "retries layer construction on matching errors" do
+      attemptsRef <- liftEffect $ Ref.new 0
+      let
+        layer :: OmLayer () (dbError :: String) { db :: String }
+        layer = makeLayer do
+          attempts <- Ref.modify (_ + 1) attemptsRef # liftEffect
+          when (attempts < 3) do
+            Om.throw { dbError: "connection refused" }
+          pure { db: "connected" }
+
+        retried = layer
+          # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 5)
+              (\_ -> { dbError: \_ -> pure true })
+
+      result <- Om.runOm {}
+        { exception: \_ -> pure { db: "" }, dbError: \_ -> pure { db: "" } }
+        (runLayer {} retried)
+      result.db `shouldEqual` "connected"
+      attempts <- liftEffect $ Ref.read attemptsRef
+      attempts `shouldEqual` 3
+
+    it "does not retry on non-matching errors" do
+      attemptsRef <- liftEffect $ Ref.new 0
+      let
+        layer :: OmLayer () (dbError :: String, authError :: String) { db :: String }
+        layer = makeLayer do
+          Ref.modify_ (_ + 1) attemptsRef # liftEffect
+          Om.throw { authError: "unauthorized" }
+
+        retried = layer
+          # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 3)
+              (\_ -> { dbError: \_ -> pure true })
+
+      _ <- Om.runOm {}
+        { exception: \_ -> pure { db: "" }
+        , dbError: \_ -> pure { db: "" }
+        , authError: \_ -> pure { db: "" }
+        }
+        (runLayer {} retried)
+      attempts <- liftEffect $ Ref.read attemptsRef
+      attempts `shouldEqual` 1
+
+    it "uses RetryStatus in the check" do
+      attemptsRef <- liftEffect $ Ref.new 0
+      let
+        layer :: OmLayer () (dbError :: String) { db :: String }
+        layer = makeLayer do
+          Ref.modify_ (_ + 1) attemptsRef # liftEffect
+          Om.throw { dbError: "fail" }
+
+        retried = layer
+          # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 10)
+              (\(RetryStatus s) -> { dbError: \_ -> pure (s.iterNumber < 2) })
+
+      _ <- Om.runOm {}
+        { exception: \_ -> pure { db: "" }, dbError: \_ -> pure { db: "" } }
+        (runLayer {} retried)
+      attempts <- liftEffect $ Ref.read attemptsRef
+      attempts `shouldEqual` 3
+
+  describe "Layer repeating" do
+
+    it "repeats layer construction while condition holds" do
+      counterRef <- liftEffect $ Ref.new 0
+      let
+        layer :: OmLayer () () { count :: Int }
+        layer = makeLayer do
+          count <- Ref.modify (_ + 1) counterRef # liftEffect
+          pure { count }
+
+        repeated = layer
+          # repeating (constantDelay (Milliseconds 0.0) <> limitRetries 10)
+              (\_ r -> pure (r.count < 5))
+
+      result <- Om.runOm {}
+        { exception: \_ -> pure { count: 0 } }
+        (runLayer {} repeated)
+      result.count `shouldEqual` 5
+
+    it "stops when policy exhausted" do
+      counterRef <- liftEffect $ Ref.new 0
+      let
+        layer :: OmLayer () () { count :: Int }
+        layer = makeLayer do
+          count <- Ref.modify (_ + 1) counterRef # liftEffect
+          pure { count }
+
+        repeated = layer
+          # repeating (constantDelay (Milliseconds 0.0) <> limitRetries 3)
+              (\_ _ -> pure true)
+
+      result <- Om.runOm {}
+        { exception: \_ -> pure { count: 0 } }
+        (runLayer {} repeated)
+      result.count `shouldEqual` 4
