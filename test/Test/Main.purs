@@ -2,8 +2,6 @@ module Test.Main where
 
 import Prelude
 
-import Data.Newtype (un)
-import Data.Tuple.Nested ((/\))
 import Effect (Effect)
 import Effect.Aff (launchAff_, throwError, try)
 import Effect.Aff.Class (liftAff)
@@ -16,7 +14,7 @@ import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer(..), Finalizers, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runScoped, withScoped, provide)
+import Yoga.Om.Layer (OmLayer, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runLayer, runScoped, withScoped, provide)
 
 -- Example types
 type Config = { port :: Int, host :: String }
@@ -95,13 +93,14 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
           pure { logger, database }
 
-      -- Run with the context
-      result /\ _ <- un OmLayer combinedLayer
-        # Om.runOm
-            { config: { port: 5432, host: "localhost" }
-            , accessLog: accessLog
-            }
-            { exception: \_ -> pure ({ logger: { log: \_ -> pure unit }, database: { query: \_ -> pure [] } } /\ (mempty :: Finalizers)) }
+      let
+        ctx =
+          { config: { port: 5432, host: "localhost" }
+          , accessLog: accessLog
+          }
+      result <- runLayer ctx combinedLayer
+        # Om.runOm ctx
+            { exception: \_ -> pure { logger: { log: \_ -> pure unit }, database: { query: \_ -> pure [] } } }
 
       -- Check the access log
       finalLog <- liftEffect $ Ref.read accessLog

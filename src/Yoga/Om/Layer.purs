@@ -1,8 +1,8 @@
 -- @inline export makeLayer arity=1
 -- @inline export runLayer arity=2
 module Yoga.Om.Layer
-  ( OmLayer(..)
-  , Finalizers(..)
+  ( OmLayer
+  , Finalizers
   , makeLayer
   , makeScopedLayer
   , bracketLayer
@@ -20,8 +20,6 @@ module Yoga.Om.Layer
 import Prelude
 
 import Data.Array as Array
-import Data.Newtype (class Newtype)
-import Data.Tuple.Nested ((/\), type (/\))
 import Data.Foldable (for_)
 import Effect.Aff (Aff, generalBracket)
 import Effect.Aff.Class (liftAff)
@@ -43,8 +41,6 @@ import Yoga.Om as Om
 -- | executed in reverse (LIFO) by `runScoped`.
 newtype Finalizers = Finalizers (Array (Aff Unit))
 
-derive instance Newtype Finalizers _
-
 instance Semigroup Finalizers where
   append (Finalizers a) (Finalizers b) = Finalizers (a <> b)
 
@@ -56,11 +52,11 @@ instance Monoid Finalizers where
 --           carries finalizers for resource cleanup
 -- =============================================================================
 
+type Built prov = { provisions :: Record prov, finalizers :: Finalizers }
+
 -- | A layer that requires dependencies (req), provides services (prov),
 -- | and may carry finalizers for scoped resource management.
-newtype OmLayer req prov err = OmLayer (Om (Record req) err (Record prov /\ Finalizers))
-
-derive instance Newtype (OmLayer req prov err) _
+data OmLayer req prov err = OmLayer (Om (Record req) err (Built prov))
 
 -- =============================================================================
 -- Layer constructors
@@ -68,7 +64,7 @@ derive instance Newtype (OmLayer req prov err) _
 
 -- | Create a layer from an Om computation (no finalizers).
 makeLayer :: forall req prov err. Om (Record req) err (Record prov) -> OmLayer req prov err
-makeLayer om = OmLayer (om <#> \r -> r /\ mempty)
+makeLayer om = OmLayer (om <#> \provisions -> { provisions, finalizers: mempty })
 
 -- | Create a scoped layer with acquire/release semantics.
 -- | The release function is guaranteed to run when `runScoped` closes the scope.
@@ -78,10 +74,9 @@ makeScopedLayer
   -> (Record prov -> Aff Unit)
   -> OmLayer req prov err
 makeScopedLayer acquire release = OmLayer do
-  prov <- acquire
-  pure (prov /\ finalizer prov)
-  where
-  finalizer prov = Finalizers [ release prov ]
+  provisions <- acquire
+  let finalizers = Finalizers [ release provisions ]
+  pure { provisions, finalizers }
 
 -- | Bracket-style scoped layer: acquire a resource, build provisions from it,
 -- | and register a finalizer for the resource.
@@ -93,10 +88,9 @@ bracketLayer
   -> OmLayer req prov err
 bracketLayer acquire release use = OmLayer do
   resource <- acquire
-  prov <- use resource
-  pure (prov /\ finalizer resource)
-  where
-  finalizer resource = Finalizers [ release resource ]
+  provisions <- use resource
+  let finalizers = Finalizers [ release resource ]
+  pure { provisions, finalizers }
 
 -- =============================================================================
 -- Custom Type Errors for Missing Dependencies
@@ -180,10 +174,10 @@ runLayer
   => Record available
   -> OmLayer req prov err
   -> Om (Record available) err (Record prov)
-runLayer _ctx layer = unsafeCastLayer layer <#> \(prov /\ _) -> prov
+runLayer _ctx (OmLayer om) = widenCtx om <#> _.provisions
   where
-  unsafeCastLayer :: OmLayer req prov err -> Om (Record available) err (Record prov /\ Finalizers)
-  unsafeCastLayer = unsafeCoerce
+  widenCtx :: Om (Record req) err (Built prov) -> Om (Record available) err (Built prov)
+  widenCtx = unsafeCoerce
 
 -- | Build a fully-provided layer, run finalizers, return the provisions.
 -- | Useful when you just need the built services.
@@ -204,13 +198,13 @@ withScoped
 withScoped (OmLayer om) callback = generalBracket acquire conditions use
   where
   acquire = Om.runOm {} errorHandlers om
-  errorHandlers = { exception: \_ -> pure (unsafeCoerce {} /\ mempty) }
+  errorHandlers = { exception: \_ -> pure { provisions: unsafeCoerce {}, finalizers: mempty } }
   conditions =
-    { completed: \_ (_ /\ fins) -> runFinalizers fins
-    , failed: \_ (_ /\ fins) -> runFinalizers fins
-    , killed: \_ (_ /\ fins) -> runFinalizers fins
+    { completed: \_ built -> runFinalizers built.finalizers
+    , failed: \_ built -> runFinalizers built.finalizers
+    , killed: \_ built -> runFinalizers built.finalizers
     }
-  use (prov /\ _) = callback prov
+  use built = callback built.provisions
 
 -- | Run finalizers in reverse order (LIFO).
 runFinalizers :: Finalizers -> Aff Unit
@@ -236,9 +230,11 @@ combineRequirements
   -> OmLayer req2 prov2 err2
   -> OmLayer reqDeduped provMerged ()
 combineRequirements (OmLayer build1) (OmLayer build2) = OmLayer do
-  prov1 /\ fins1 <- Om.expand build1
-  prov2 /\ fins2 <- Om.expand build2
-  pure (Record.merge prov1 prov2 /\ (fins1 <> fins2))
+  built1 <- Om.expand build1
+  built2 <- Om.expand build2
+  let provisions = Record.merge built1.provisions built2.provisions
+  let finalizers = built1.finalizers <> built2.finalizers
+  pure { provisions, finalizers }
 
 -- =============================================================================
 -- Vertical composition — feed output of one layer into input of another
@@ -256,11 +252,12 @@ provide
   -> OmLayer req prov1 err1
   -> OmLayer req prov2 ()
 provide (OmLayer layer2) (OmLayer layer1) = OmLayer do
-  prov1 /\ fins1 <- Om.expand layer1
-  prov2 /\ fins2 <- runLayer2 prov1
-  pure (prov2 /\ (fins1 <> fins2))
+  built1 <- Om.expand layer1
+  built2 <- runLayer2 built1.provisions
+  let finalizers = built1.finalizers <> built2.finalizers
+  pure { provisions: built2.provisions, finalizers }
   where
   runLayer2 ctx = liftAff $ Om.runOm ctx errorHandlers (Om.expand layer2)
-  errorHandlers = { exception: \_ -> pure (unsafeCoerce {} /\ mempty) }
+  errorHandlers = { exception: \_ -> pure { provisions: unsafeCoerce {}, finalizers: mempty } }
 
 infixl 9 provide as >->
