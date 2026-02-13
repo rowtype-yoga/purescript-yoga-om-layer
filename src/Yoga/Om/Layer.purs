@@ -18,6 +18,9 @@ module Yoga.Om.Layer
   , (>->)
   , recovering
   , repeating
+  , wireLayers
+  , wireLayersRL
+  , class WireLayersRL
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -26,6 +29,7 @@ module Yoga.Om.Layer
 import Prelude
 
 import Control.Monad.Error.Class (catchError, throwError)
+import Data.Symbol (class IsSymbol)
 import Control.Parallel (class Parallel)
 import Control.Parallel as Parallel
 import Data.Array as Array
@@ -44,6 +48,8 @@ import Effect.Ref (Ref)
 import Effect.Ref as Ref
 import Effect.Unsafe (unsafePerformEffect)
 import Prim.Row (class Nub, class Union)
+import Prim.Row as Row
+import Type.Proxy (Proxy(..))
 import Prim.RowList (class RowToList, Cons, Nil, RowList)
 import Prim.TypeError (class Fail, Above, Quote, Text)
 import Record as Record
@@ -464,3 +470,86 @@ repeating policy shouldRepeat (OmLayer layerId om) =
     ifM (shouldRepeat status result)
       (applyAndDelay policy status >>= maybe (pure result) go)
       (pure result)
+
+-- =============================================================================
+-- Auto-wiring
+-- =============================================================================
+
+class
+  WireLayersRL
+    (rl :: RowList Type)
+    (layers :: Row Type)
+    (accReq :: Row Type)
+    (accErr :: Row Type)
+    (accProv :: Row Type)
+    (resReq :: Row Type)
+    (resErr :: Row Type)
+    (resProv :: Row Type)
+  | rl layers accReq accErr accProv -> resReq resErr resProv
+  where
+  wireLayersRL
+    :: Proxy rl
+    -> Record layers
+    -> OmLayer accReq accErr (Record accProv)
+    -> OmLayer resReq resErr (Record resProv)
+
+instance WireLayersRL Nil layers accReq accErr accProv accReq accErr accProv where
+  wireLayersRL _ _ acc = acc
+
+instance
+  ( IsSymbol sym
+  , Row.Cons sym (OmLayer nextReq nextErr (Record nextProv)) _rest layers
+  -- next's requirements must be subset of (accProv + accReq)
+  , Union accProv accReq provReqOut
+  , Nub provReqOut provReqOut
+  , Union nextReq _nextReqRest provReqOut
+  , Keys nextReq
+  , Keys accReq
+  , Keys accProv
+  -- merge errors
+  , Union accErr nextErr errMergedRaw
+  , Nub errMergedRaw errMerged
+  , Union accErr _e1 errMerged
+  , Union nextErr _e2 errMerged
+  -- merge provisions
+  , Union accProv nextProv provMergedRaw
+  , Nub provMergedRaw provMerged
+  -- recurse
+  , WireLayersRL tail layers accReq errMerged provMerged resReq resErr resProv
+  ) =>
+  WireLayersRL (Cons sym (OmLayer nextReq nextErr (Record nextProv)) tail) layers accReq accErr accProv resReq resErr resProv
+  where
+  wireLayersRL _ layers acc =
+    wireLayersRL (Proxy :: Proxy tail) layers combined
+    where
+    next :: OmLayer nextReq nextErr (Record nextProv)
+    next = Record.get (Proxy :: Proxy sym) layers
+
+    combined :: OmLayer accReq errMerged (Record provMerged)
+    combined = OmLayer (freshId unit) do
+      accProv <- coerceOm (buildLayer acc)
+      nextProv <- coerceOm (buildLayer next) # widenCtx' accProv
+      pure (Record.merge accProv nextProv)
+
+    coerceOm :: forall r1 e1 r2 e2 a. Om (Record r1) e1 a -> Om (Record r2) e2 a
+    coerceOm = unsafeCoerce
+
+-- | Om.widenCtx without constraints. Union/Nub from Prim.Row are
+-- | compiler builtins with no runtime representation, so this is safe.
+widenCtx'
+  :: forall additional ctx err a
+   . Record additional
+  -> Om { | ctx } err a
+  -> Om { | ctx } err a
+widenCtx' = unsafeCoerce (Om.widenCtx :: {} -> Om {} () a -> Om {} () a)
+
+wireLayers
+  :: forall layers rl req err prov
+   . RowToList layers rl
+  => WireLayersRL rl layers (scope :: Scope) () () req err prov
+  => Record layers
+  -> OmLayer req err (Record prov)
+wireLayers layers =
+  wireLayersRL (Proxy :: Proxy rl) layers seed
+  where
+  seed = pure {} :: OmLayer (scope :: Scope) () (Record ())
