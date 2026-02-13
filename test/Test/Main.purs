@@ -533,7 +533,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         retried = layer
           # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 5)
-              (\_ -> { dbError: \_ -> pure true })
+              \_ -> { dbError: \_ -> pure true }
 
       result <- Om.runOm {}
         { exception: \_ -> pure { db: "" }, dbError: \_ -> pure { db: "" } }
@@ -552,7 +552,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         retried = layer
           # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 3)
-              (\_ -> { dbError: \_ -> pure true })
+              \_ -> { dbError: \_ -> pure true }
 
       _ <- Om.runOm {}
         { exception: \_ -> pure { db: "" }
@@ -562,6 +562,56 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
         (runLayer {} retried)
       attempts <- liftEffect $ Ref.read attemptsRef
       attempts `shouldEqual` 1
+
+    it "preserves the error when retries are exhausted" do
+      let
+        layer :: OmLayer () (dbError :: String) { db :: String }
+        layer = makeLayer do
+          Om.throw { dbError: "connection refused" }
+
+        retried = layer
+          # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 2)
+              \_ -> { dbError: \_ -> pure true }
+
+      result <- Om.runReader {} (runLayer {} retried)
+        # liftAff
+      case result of
+        Left err -> do
+          let
+            msg = err # match
+              { exception: \_ -> "exception"
+              , dbError: \e -> e
+              }
+          msg `shouldEqual` "connection refused"
+        Right _ -> "should have failed" `shouldEqual` "but succeeded"
+
+    it "only retries the specified error in a multi-error layer" do
+      attemptsRef <- liftEffect $ Ref.new 0
+      let
+        layer :: OmLayer () (dbError :: String, cacheError :: String) { db :: String }
+        layer = makeLayer do
+          attempts <- Ref.modify (_ + 1) attemptsRef # liftEffect
+          if attempts <= 2 then Om.throw { dbError: "db down" }
+          else Om.throw { cacheError: "cache miss" }
+
+        retried = layer
+          # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 5)
+              \_ -> { dbError: \_ -> pure true }
+
+      result <- Om.runReader {} (runLayer {} retried)
+        # liftAff
+      case result of
+        Left err -> do
+          let
+            msg = err # match
+              { exception: \_ -> "exception"
+              , dbError: \e -> e
+              , cacheError: \e -> e
+              }
+          msg `shouldEqual` "cache miss"
+        Right _ -> "should have failed" `shouldEqual` "but succeeded"
+      attempts <- liftEffect $ Ref.read attemptsRef
+      attempts `shouldEqual` 3
 
     it "uses RetryStatus in the check" do
       attemptsRef <- liftEffect $ Ref.new 0
@@ -573,7 +623,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         retried = layer
           # recovering (constantDelay (Milliseconds 0.0) <> limitRetries 10)
-              (\(RetryStatus s) -> { dbError: \_ -> pure (s.iterNumber < 2) })
+              \(RetryStatus s) -> { dbError: \_ -> pure (s.iterNumber < 2) }
 
       _ <- Om.runOm {}
         { exception: \_ -> pure { db: "" }, dbError: \_ -> pure { db: "" } }
@@ -593,7 +643,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         repeated = layer
           # repeating (constantDelay (Milliseconds 0.0) <> limitRetries 10)
-              (\_ r -> pure (r.count < 5))
+              \_ r -> pure (r.count < 5)
 
       result <- Om.runOm {}
         { exception: \_ -> pure { count: 0 } }
@@ -610,7 +660,7 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
 
         repeated = layer
           # repeating (constantDelay (Milliseconds 0.0) <> limitRetries 3)
-              (\_ _ -> pure true)
+              \_ _ -> pure true
 
       result <- Om.runOm {}
         { exception: \_ -> pure { count: 0 } }
