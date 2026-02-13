@@ -14,7 +14,7 @@ import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runLayer, runScoped, withScoped, provide)
+import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, fresh, combineRequirements, runLayer, runScoped, withScoped, provide)
 
 -- Example types
 type Config = { port :: Int, host :: String }
@@ -152,6 +152,38 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       result.value `shouldEqual` 42
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "acquire", "release" ]
+
+    it "fresh layer builds twice even when same base layer" do
+      counter <- liftEffect $ Ref.new 0
+      let
+        baseLayer :: OmLayer (scope :: Scope) (value :: String) ()
+        baseLayer = makeLayer do
+          liftEffect $ Ref.modify_ (_ + 1) counter
+          pure { value: "built" }
+
+        branch1 :: OmLayer (scope :: Scope) (out1 :: String) ()
+        branch1 = consumer `provide` fresh baseLayer
+          where
+          consumer :: OmLayer (scope :: Scope, value :: String) (out1 :: String) ()
+          consumer = makeLayer do
+            { value } <- Om.ask
+            pure { out1: value <> "-1" }
+
+        branch2 :: OmLayer (scope :: Scope) (out2 :: String) ()
+        branch2 = consumer `provide` fresh baseLayer
+          where
+          consumer :: OmLayer (scope :: Scope, value :: String) (out2 :: String) ()
+          consumer = makeLayer do
+            { value } <- Om.ask
+            pure { out2: value <> "-2" }
+
+        app = combineRequirements branch1 branch2
+
+      result <- liftAff $ runScoped app
+      result.out1 `shouldEqual` "built-1"
+      result.out2 `shouldEqual` "built-2"
+      count <- liftEffect $ Ref.read counter
+      count `shouldEqual` 2
 
     it "combines scoped and non-scoped layers" do
       log <- liftEffect $ Ref.new []
