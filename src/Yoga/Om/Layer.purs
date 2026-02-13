@@ -1,4 +1,3 @@
--- @inline export makeLayer arity=1
 -- @inline export runLayer arity=2
 module Yoga.Om.Layer
   ( OmLayer
@@ -7,16 +6,13 @@ module Yoga.Om.Layer
   , makeScopedLayer
   , bracketLayer
   , acquireRelease
-  , memoized
+  , fresh
   , runLayer
   , runScoped
   , withScoped
   , combineRequirements
   , provide
   , (>->)
-  , class CheckMemoKeys
-  , class CheckMemoKeysList
-  , class CheckKeyNotDuplicated
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -29,19 +25,19 @@ import Data.Foldable (for_)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Symbol (class IsSymbol, reflectSymbol)
+import Data.Nullable (Nullable, toMaybe)
 import Effect (Effect)
 import Effect.Aff (Aff, bracket)
 import Effect.Class (liftEffect)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
+import Effect.Unsafe (unsafePerformEffect)
 import Prim.Row (class Nub, class Union)
 import Prim.RowList (class RowToList, Cons, Nil, RowList)
 import Prim.TypeError (class Fail, Above, Quote, Text)
 import Record as Record
 import Record.Studio (class Keys)
 import Type.Equality (class TypeEquals)
-import Type.Proxy (Proxy(..))
 import Unsafe.Coerce (unsafeCoerce)
 import Yoga.Om (Om)
 import Yoga.Om as Om
@@ -52,10 +48,11 @@ import Yoga.Om as Om
 
 -- | A first-class representation of resource lifetime and memoization.
 -- | Finalizers are registered via `acquireRelease` and run in reverse order
--- | when the scope is closed. Memoized layers share results via the cache.
+-- | when the scope is closed. Layers are automatically memoized by identity
+-- | within a scope — the same layer value builds only once.
 newtype Scope = Scope
   { finalizers :: Ref (Array (Aff Unit))
-  , cache :: Ref (Map String Dynamic)
+  , cache :: Ref (Map Int Dynamic)
   }
 
 -- | Opaque box for cached values, retrieved via `unsafeCoerce`.
@@ -85,20 +82,60 @@ closeScope (Scope s) = do
   for_ (Array.reverse fins) identity
 
 -- =============================================================================
+-- Unique layer IDs
+-- =============================================================================
+
+foreign import nextId :: Effect Int
+foreign import tryGetScope :: forall r. Record r -> Nullable Scope
+
+-- | Generate a unique layer ID. Uses unsafePerformEffect since layer
+-- | construction is at module init time (like Scala's `object` identity).
+-- | This is a function (Unit -> Int) to ensure each call site gets a unique ID.
+freshId :: Unit -> Int
+freshId _ = unsafePerformEffect nextId
+
+-- =============================================================================
 -- OmLayer
 -- =============================================================================
 
--- | A layer that requires dependencies (req), provides services (prov),
--- | and tracks memoization keys (memo) to prevent key collisions at compile time.
-data OmLayer req prov err (memo :: Row Type) = OmLayer (Om (Record req) err (Record prov))
+-- | A layer that requires dependencies (req) and provides services (prov).
+-- | Each layer has a unique identity used for automatic memoization within a Scope.
+data OmLayer req prov err = OmLayer Int (Om (Record req) err (Record prov))
+
+-- =============================================================================
+-- Automatic memoization
+-- =============================================================================
+
+-- | Wrap an Om computation with cache logic.
+-- | If a scope is available in the context, checks/populates the cache by layer ID.
+-- | If no scope is present, runs the computation directly.
+withCache :: forall req prov err. Int -> Om (Record req) err (Record prov) -> Om (Record req) err (Record prov)
+withCache layerId om = do
+  ctx <- Om.ask
+  case toMaybe (tryGetScope ctx) of
+    Nothing -> om
+    Just (Scope s) -> do
+      cached <- liftEffect $ Map.lookup layerId <$> Ref.read s.cache
+      case cached of
+        Just hit -> pure (fromDynamic hit)
+        Nothing -> do
+          prov <- om
+          liftEffect $ Ref.modify_ (Map.insert layerId (toDynamic prov)) s.cache
+          pure prov
 
 -- =============================================================================
 -- Layer constructors
 -- =============================================================================
 
 -- | Create a layer from an Om computation.
-makeLayer :: forall req prov err. Om (Record req) err (Record prov) -> OmLayer req prov err ()
-makeLayer = OmLayer
+-- | The layer is automatically memoized within a Scope — the same layer value
+-- | used in multiple branches of a dependency graph builds only once.
+makeLayer :: forall req prov err. Om (Record req) err (Record prov) -> OmLayer req prov err
+makeLayer om = OmLayer (freshId unit) om
+
+-- | Extract the Om from a layer, wrapped with cache logic.
+buildLayer :: forall req prov err. OmLayer req prov err -> Om (Record req) err (Record prov)
+buildLayer (OmLayer layerId om) = withCache layerId om
 
 -- | Create a scoped layer with acquire/release semantics.
 -- | The release function runs when the enclosing scope closes.
@@ -107,7 +144,7 @@ makeScopedLayer
   :: forall req prov err
    . Om { scope :: Scope | req } err (Record prov)
   -> (Record prov -> Aff Unit)
-  -> OmLayer (scope :: Scope | req) prov err ()
+  -> OmLayer (scope :: Scope | req) prov err
 makeScopedLayer acquire release = makeLayer do
   acquireRelease acquire release
 
@@ -118,7 +155,7 @@ bracketLayer
    . Om { scope :: Scope | req } err resource
   -> (resource -> Aff Unit)
   -> (resource -> Om { scope :: Scope | req } err (Record prov))
-  -> OmLayer (scope :: Scope | req) prov err ()
+  -> OmLayer (scope :: Scope | req) prov err
 bracketLayer acquire release use = makeLayer do
   resource <- acquireRelease acquire (\r -> release r)
   use resource
@@ -137,57 +174,11 @@ acquireRelease acquire release = do
   addFinalizer scope (release a) # liftEffect
   pure a
 
--- | Memoize a layer by a compile-time symbol key.
--- | If the same key has already been built in this scope, the cached result
--- | is returned without re-running the layer.
-memoized
-  :: forall sym req prov err memo
-   . IsSymbol sym
-  => Proxy sym
-  -> OmLayer (scope :: Scope | req) prov err memo
-  -> OmLayer (scope :: Scope | req) prov err (sym :: Record prov | memo)
-memoized _ (OmLayer om) = OmLayer do
-  { scope: Scope s } <- Om.ask
-  let key = reflectSymbol (Proxy :: Proxy sym)
-  cached <- liftEffect $ Map.lookup key <$> Ref.read s.cache
-  case cached of
-    Just hit -> pure (fromDynamic hit)
-    Nothing -> do
-      prov <- om
-      liftEffect $ Ref.modify_ (Map.insert key (toDynamic prov)) s.cache
-      pure prov
-
--- =============================================================================
--- Memo key safety — reject duplicate keys with different types
--- =============================================================================
-
-class CheckMemoKeys (row :: Row Type)
-
-instance (RowToList row rl, CheckMemoKeysList rl) => CheckMemoKeys row
-
-class CheckMemoKeysList (rl :: RowList Type)
-
-instance CheckMemoKeysList Nil
-
-instance
-  ( CheckMemoKeysList tail
-  , CheckKeyNotDuplicated label ty tail
-  ) =>
-  CheckMemoKeysList (Cons label ty tail)
-
-class CheckKeyNotDuplicated (label :: Symbol) (ty :: Type) (rest :: RowList Type)
-
-instance CheckKeyNotDuplicated label ty Nil
-
-instance
-  ( TypeEquals ty ty'
-  , CheckKeyNotDuplicated label ty tail
-  ) =>
-  CheckKeyNotDuplicated label ty (Cons label ty' tail)
-
-else instance
-  CheckKeyNotDuplicated label ty tail =>
-  CheckKeyNotDuplicated label ty (Cons otherLabel otherTy tail)
+-- | Create a fresh (non-memoized) copy of a layer.
+-- | The new layer has a unique identity and will always build independently,
+-- | even within the same scope.
+fresh :: forall req prov err. OmLayer req prov err -> OmLayer req prov err
+fresh (OmLayer _ om) = OmLayer (freshId unit) om
 
 -- =============================================================================
 -- Custom Type Errors for Missing Dependencies
@@ -265,12 +256,12 @@ else instance
 
 -- | Run a layer with a given context, with custom error if requirements aren't met.
 runLayer
-  :: forall req prov err available memo
+  :: forall req prov err available
    . CheckAllProvided req available
   => Record available
-  -> OmLayer req prov err memo
+  -> OmLayer req prov err
   -> Om (Record available) err (Record prov)
-runLayer _ctx (OmLayer om) = widenCtx om
+runLayer _ctx layer = widenCtx (buildLayer layer)
   where
   widenCtx :: Om (Record req) err (Record prov) -> Om (Record available) err (Record prov)
   widenCtx = unsafeCoerce
@@ -278,8 +269,8 @@ runLayer _ctx (OmLayer om) = widenCtx om
 -- | Build a fully-provided scoped layer, return the provisions.
 -- | All finalizers run after the provisions are returned.
 runScoped
-  :: forall prov memo
-   . OmLayer (scope :: Scope) prov () memo
+  :: forall prov
+   . OmLayer (scope :: Scope) prov ()
   -> Aff (Record prov)
 runScoped layer = withScoped layer pure
 
@@ -288,14 +279,15 @@ runScoped layer = withScoped layer pure
 -- | running all finalizers in reverse order — whether by success, failure,
 -- | or interruption.
 withScoped
-  :: forall prov a memo
-   . OmLayer (scope :: Scope) prov () memo
+  :: forall prov a
+   . OmLayer (scope :: Scope) prov ()
   -> (Record prov -> Aff a)
   -> Aff a
-withScoped (OmLayer om) callback = bracket acquire release use
+withScoped layer callback = bracket acquire release use
   where
   acquire = do
     scope <- newScope # liftEffect
+    let om = buildLayer layer
     prov <- Om.runOm { scope } { exception: \_ -> pure (unsafeCoerce {}) } om
     pure { scope, prov }
   release { scope } = closeScope scope
@@ -306,7 +298,7 @@ withScoped (OmLayer om) callback = bracket acquire release use
 -- =============================================================================
 
 combineRequirements
-  :: forall req1 req2 prov1 prov2 err1 err2 memo1 memo2 provMerged provMergedRaw reqMerged reqDeduped memoMerged memoDeduped _req1 _req2 _err1 _err2
+  :: forall req1 req2 prov1 prov2 err1 err2 provMerged provMergedRaw reqMerged reqDeduped _req1 _req2 _err1 _err2
    . Union req1 req2 reqMerged
   => Nub reqMerged reqDeduped
   => Union req1 _req1 reqDeduped
@@ -315,17 +307,14 @@ combineRequirements
   => Union err2 _err2 ()
   => Union prov1 prov2 provMergedRaw
   => Nub provMergedRaw provMerged
-  => Union memo1 memo2 memoMerged
-  => CheckMemoKeys memoMerged
-  => Nub memoMerged memoDeduped
   => Keys req1
   => Keys req2
-  => OmLayer req1 prov1 err1 memo1
-  -> OmLayer req2 prov2 err2 memo2
-  -> OmLayer reqDeduped provMerged () memoDeduped
-combineRequirements (OmLayer build1) (OmLayer build2) = OmLayer do
-  rec1 <- Om.expand build1
-  rec2 <- Om.expand build2
+  => OmLayer req1 prov1 err1
+  -> OmLayer req2 prov2 err2
+  -> OmLayer reqDeduped provMerged ()
+combineRequirements layer1 layer2 = OmLayer (freshId unit) do
+  rec1 <- Om.expand (buildLayer layer1)
+  rec2 <- Om.expand (buildLayer layer2)
   pure (Record.merge rec1 rec2)
 
 -- =============================================================================
@@ -333,7 +322,7 @@ combineRequirements (OmLayer build1) (OmLayer build2) = OmLayer do
 -- =============================================================================
 
 provide
-  :: forall req prov1 prov2 err1 err2 req2 reqOut memo1 memo2 memoMerged memoDeduped _req _prov1 _err1 _err2
+  :: forall req prov1 prov2 err1 err2 req2 reqOut _req _prov1 _err1 _err2
    . Union req _req req
   => Union prov1 _prov1 prov1
   => Union err1 _err1 ()
@@ -341,17 +330,14 @@ provide
   => Union prov1 req reqOut
   => Nub reqOut reqOut
   => Union req2 _prov1 reqOut
-  => Union memo1 memo2 memoMerged
-  => CheckMemoKeys memoMerged
-  => Nub memoMerged memoDeduped
   => Keys req
   => Keys prov1
   => Keys req2
-  => OmLayer req2 prov2 err2 memo2
-  -> OmLayer req prov1 err1 memo1
-  -> OmLayer req prov2 () memoDeduped
-provide (OmLayer layer2) (OmLayer layer1) = OmLayer do
-  prov1 <- Om.expand layer1
-  Om.expand layer2 # Om.widenCtx prov1
+  => OmLayer req2 prov2 err2
+  -> OmLayer req prov1 err1
+  -> OmLayer req prov2 ()
+provide l2 l1 = OmLayer (freshId unit) do
+  prov1 <- Om.expand (buildLayer l1)
+  Om.expand (buildLayer l2) # Om.widenCtx prov1
 
 infixl 9 provide as >->
