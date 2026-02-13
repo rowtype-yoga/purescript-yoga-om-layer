@@ -7,6 +7,7 @@ module Yoga.Om.Layer
   , makeScopedLayer
   , bracketLayer
   , acquireRelease
+  , memoized
   , runLayer
   , runScoped
   , withScoped
@@ -22,9 +23,12 @@ import Prelude
 
 import Data.Array as Array
 import Data.Foldable (for_)
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Maybe (Maybe(..))
+import Data.Symbol (class IsSymbol, reflectSymbol)
 import Effect (Effect)
 import Effect.Aff (Aff, bracket)
-import Effect.Aff.Class (liftAff)
 import Effect.Class (liftEffect)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
@@ -34,6 +38,7 @@ import Prim.TypeError (class Fail, Above, Quote, Text)
 import Record as Record
 import Record.Studio (class Keys)
 import Type.Equality (class TypeEquals)
+import Type.Proxy (Proxy(..))
 import Unsafe.Coerce (unsafeCoerce)
 import Yoga.Om (Om)
 import Yoga.Om as Om
@@ -42,23 +47,38 @@ import Yoga.Om as Om
 -- Scope — a first-class representation of resource lifetime
 -- =============================================================================
 
--- | A mutable collection of finalizers representing the lifetime of resources.
+-- | A first-class representation of resource lifetime and memoization.
 -- | Finalizers are registered via `acquireRelease` and run in reverse order
--- | when the scope is closed.
-newtype Scope = Scope (Ref (Array (Aff Unit)))
+-- | when the scope is closed. Memoized layers share results via the cache.
+newtype Scope = Scope
+  { finalizers :: Ref (Array (Aff Unit))
+  , cache :: Ref (Map String Dynamic)
+  }
+
+-- | Opaque box for cached values, retrieved via `unsafeCoerce`.
+foreign import data Dynamic :: Type
+
+toDynamic :: forall a. a -> Dynamic
+toDynamic = unsafeCoerce
+
+fromDynamic :: forall a. Dynamic -> a
+fromDynamic = unsafeCoerce
 
 -- | Create a fresh, empty scope.
 newScope :: Effect Scope
-newScope = Scope <$> Ref.new []
+newScope = do
+  finalizers <- Ref.new []
+  cache <- Ref.new Map.empty
+  pure (Scope { finalizers, cache })
 
 -- | Register a finalizer to run when this scope closes.
 addFinalizer :: Scope -> Aff Unit -> Effect Unit
-addFinalizer (Scope ref) fin = Ref.modify_ (_ <> [ fin ]) ref
+addFinalizer (Scope s) fin = Ref.modify_ (_ <> [ fin ]) s.finalizers
 
 -- | Close the scope, running all registered finalizers in reverse order.
 closeScope :: Scope -> Aff Unit
-closeScope (Scope ref) = do
-  fins <- liftEffect $ Ref.read ref
+closeScope (Scope s) = do
+  fins <- liftEffect $ Ref.read s.finalizers
   for_ (Array.reverse fins) identity
 
 -- =============================================================================
@@ -112,6 +132,26 @@ acquireRelease acquire release = do
   { scope } <- Om.ask
   addFinalizer scope (release a) # liftEffect
   pure a
+
+-- | Memoize a layer by a compile-time symbol key.
+-- | If the same key has already been built in this scope, the cached result
+-- | is returned without re-running the layer.
+memoized
+  :: forall sym req prov err
+   . IsSymbol sym
+  => Proxy sym
+  -> OmLayer (scope :: Scope | req) prov err
+  -> OmLayer (scope :: Scope | req) prov err
+memoized _ (OmLayer om) = OmLayer do
+  { scope: Scope s } <- Om.ask
+  let key = reflectSymbol (Proxy :: Proxy sym)
+  cached <- liftEffect $ Map.lookup key <$> Ref.read s.cache
+  case cached of
+    Just hit -> pure (fromDynamic hit)
+    Nothing -> do
+      prov <- om
+      liftEffect $ Ref.modify_ (Map.insert key (toDynamic prov)) s.cache
+      pure prov
 
 -- =============================================================================
 -- Custom Type Errors for Missing Dependencies

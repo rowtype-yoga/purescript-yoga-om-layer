@@ -14,7 +14,8 @@ import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, combineRequirements, runLayer, runScoped, withScoped, provide)
+import Type.Proxy (Proxy(..))
+import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, memoized, combineRequirements, runLayer, runScoped, withScoped, provide)
 
 -- Example types
 type Config = { port :: Int, host :: String }
@@ -224,3 +225,71 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       result.plain `shouldEqual` "no-finalizer"
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "release-scoped" ]
+
+  describe "Memoized Layers" do
+
+    it "builds a memoized layer only once even when used twice" do
+      counter <- liftEffect $ Ref.new 0
+      let
+        expensiveLayer :: OmLayer (scope :: Scope) (value :: String) ()
+        expensiveLayer = memoized (Proxy :: Proxy "expensive") $ makeLayer do
+          liftEffect $ Ref.modify_ (_ + 1) counter
+          pure { value: "built" }
+
+        -- Both branches independently provide expensiveLayer
+        branch1 :: OmLayer (scope :: Scope) (out1 :: String) ()
+        branch1 = consumer1 `provide` expensiveLayer
+          where
+          consumer1 :: OmLayer (scope :: Scope, value :: String) (out1 :: String) ()
+          consumer1 = makeLayer do
+            { value } <- Om.ask
+            pure { out1: value <> "-1" }
+
+        branch2 :: OmLayer (scope :: Scope) (out2 :: String) ()
+        branch2 = consumer2 `provide` expensiveLayer
+          where
+          consumer2 :: OmLayer (scope :: Scope, value :: String) (out2 :: String) ()
+          consumer2 = makeLayer do
+            { value } <- Om.ask
+            pure { out2: value <> "-2" }
+
+        app = combineRequirements branch1 branch2
+
+      result <- liftAff $ runScoped app
+      result.out1 `shouldEqual` "built-1"
+      result.out2 `shouldEqual` "built-2"
+      count <- liftEffect $ Ref.read counter
+      count `shouldEqual` 1
+
+    it "memoized scoped layer runs finalizer only once" do
+      log <- liftEffect $ Ref.new []
+      let
+        dbLayer :: OmLayer (scope :: Scope) (db :: String) ()
+        dbLayer = memoized (Proxy :: Proxy "db") $ makeScopedLayer
+          (pure { db: "connected" })
+          (\_ -> liftEffect $ Ref.modify_ (_ <> [ "db-closed" ]) log)
+
+        -- Both branches independently provide dbLayer
+        repoBranch :: OmLayer (scope :: Scope) (repo :: String) ()
+        repoBranch = repo `provide` dbLayer
+          where
+          repo :: OmLayer (scope :: Scope, db :: String) (repo :: String) ()
+          repo = makeLayer do
+            { db } <- Om.ask
+            pure { repo: db <> "-repo" }
+
+        analyticsBranch :: OmLayer (scope :: Scope) (analytics :: String) ()
+        analyticsBranch = analytics `provide` dbLayer
+          where
+          analytics :: OmLayer (scope :: Scope, db :: String) (analytics :: String) ()
+          analytics = makeLayer do
+            { db } <- Om.ask
+            pure { analytics: db <> "-analytics" }
+
+        app = combineRequirements repoBranch analyticsBranch
+
+      result <- liftAff $ runScoped app
+      result.repo `shouldEqual` "connected-repo"
+      result.analytics `shouldEqual` "connected-analytics"
+      finalLog <- liftEffect $ Ref.read log
+      finalLog `shouldEqual` [ "db-closed" ]
