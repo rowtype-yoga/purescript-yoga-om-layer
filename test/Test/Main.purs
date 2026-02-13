@@ -13,6 +13,8 @@ import Test.Spec (describe, it)
 import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter (consoleReporter)
 import Test.Spec.Runner (runSpec)
+import Data.Either (Either(..))
+import Data.Variant (match)
 import Yoga.Om as Om
 import Yoga.Om.Layer (OmLayer, Scope, makeLayer, makeScopedLayer, bracketLayer, fresh, combineRequirements, runLayer, runScoped, withScoped, provide)
 
@@ -305,3 +307,101 @@ main = launchAff_ $ runSpec [ consoleReporter ] do
       result.y `shouldEqual` "43"
       finalLog <- liftEffect $ Ref.read log
       finalLog `shouldEqual` [ "acquire", "release" ]
+
+  describe "Error Channel" do
+
+    it "composes layers with different error types" do
+      let
+        dbLayer :: OmLayer () (db :: String) (dbError :: String)
+        dbLayer = makeLayer do
+          pure { db: "connected" }
+
+        cacheLayer :: OmLayer () (cache :: String) (cacheError :: String)
+        cacheLayer = makeLayer do
+          pure { cache: "ready" }
+
+        combined :: OmLayer () (db :: String, cache :: String) (dbError :: String, cacheError :: String)
+        combined = combineRequirements dbLayer cacheLayer
+
+      result <- Om.runOm {}
+        { exception: \_ -> pure { db: "", cache: "" }
+        , dbError: \_ -> pure { db: "", cache: "" }
+        , cacheError: \_ -> pure { db: "", cache: "" }
+        }
+        (runLayer {} combined)
+      result.db `shouldEqual` "connected"
+      result.cache `shouldEqual` "ready"
+
+    it "propagates errors from the first layer" do
+      let
+        failingLayer :: OmLayer () (db :: String) (dbError :: String)
+        failingLayer = makeLayer do
+          Om.throw { dbError: "connection refused" }
+
+        okLayer :: OmLayer () (cache :: String) ()
+        okLayer = makeLayer do
+          pure { cache: "ready" }
+
+        combined = combineRequirements failingLayer okLayer
+
+      result <- Om.runReader {} (runLayer {} combined)
+        # liftAff
+      case result of
+        Left err -> do
+          let
+            msg = err # match
+              { exception: \_ -> "exception"
+              , dbError: \e -> e
+              }
+          msg `shouldEqual` "connection refused"
+        Right _ -> "should have failed" `shouldEqual` "but succeeded"
+
+    it "propagates errors from the second layer" do
+      let
+        okLayer :: OmLayer () (db :: String) ()
+        okLayer = makeLayer do
+          pure { db: "connected" }
+
+        failingLayer :: OmLayer () (cache :: String) (cacheError :: String)
+        failingLayer = makeLayer do
+          Om.throw { cacheError: "cache unavailable" }
+
+        combined = combineRequirements okLayer failingLayer
+
+      result <- Om.runReader {} (runLayer {} combined)
+        # liftAff
+      case result of
+        Left err -> do
+          let
+            msg = err # match
+              { exception: \_ -> "exception"
+              , cacheError: \e -> e
+              }
+          msg `shouldEqual` "cache unavailable"
+        Right _ -> "should have failed" `shouldEqual` "but succeeded"
+
+    it "propagates errors through vertical composition" do
+      let
+        baseLayer :: OmLayer () (base :: String) (baseError :: String)
+        baseLayer = makeLayer do
+          Om.throw { baseError: "base failed" }
+
+        upperLayer :: OmLayer (base :: String) (upper :: String) (upperError :: String)
+        upperLayer = makeLayer do
+          { base } <- Om.ask
+          pure { upper: base <> "-extended" }
+
+        composed = upperLayer `provide` baseLayer
+
+      result <- Om.runReader {} (runLayer {} composed)
+        # liftAff
+      case result of
+        Left err -> do
+          let
+            msg = err # match
+              { exception: \_ -> "exception"
+              , baseError: \e -> e
+              , upperError: \_ -> "upper"
+              }
+          msg `shouldEqual` "base failed"
+        Right _ -> "should have failed" `shouldEqual` "but succeeded"

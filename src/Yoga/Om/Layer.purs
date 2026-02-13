@@ -298,20 +298,22 @@ withScoped layer callback = bracket acquire release use
 -- =============================================================================
 
 combineRequirements
-  :: forall req1 req2 prov1 prov2 err1 err2 provMerged provMergedRaw reqMerged reqDeduped _req1 _req2 _err1 _err2
+  :: forall req1 req2 prov1 prov2 err1 err2 provMerged provMergedRaw reqMerged reqDeduped errMerged errDeduped _req1 _req2 _err1 _err2
    . Union req1 req2 reqMerged
   => Nub reqMerged reqDeduped
   => Union req1 _req1 reqDeduped
   => Union req2 _req2 reqDeduped
-  => Union err1 _err1 ()
-  => Union err2 _err2 ()
+  => Union err1 err2 errMerged
+  => Nub errMerged errDeduped
+  => Union err1 _err1 errDeduped
+  => Union err2 _err2 errDeduped
   => Union prov1 prov2 provMergedRaw
   => Nub provMergedRaw provMerged
   => Keys req1
   => Keys req2
   => OmLayer req1 prov1 err1
   -> OmLayer req2 prov2 err2
-  -> OmLayer reqDeduped provMerged ()
+  -> OmLayer reqDeduped provMerged errDeduped
 combineRequirements layer1 layer2 = OmLayer (freshId unit) do
   rec1 <- Om.expand (buildLayer layer1)
   rec2 <- Om.expand (buildLayer layer2)
@@ -322,11 +324,13 @@ combineRequirements layer1 layer2 = OmLayer (freshId unit) do
 -- =============================================================================
 
 provide
-  :: forall req prov1 prov2 err1 err2 req2 reqOut _req _prov1 _err1 _err2
+  :: forall req prov1 prov2 err1 err2 req2 reqOut errMerged errDeduped _req _prov1 _err1 _err2
    . Union req _req req
   => Union prov1 _prov1 prov1
-  => Union err1 _err1 ()
-  => Union err2 _err2 ()
+  => Union err1 err2 errMerged
+  => Nub errMerged errDeduped
+  => Union err1 _err1 errDeduped
+  => Union err2 _err2 errDeduped
   => Union prov1 req reqOut
   => Nub reqOut reqOut
   => Union req2 _prov1 reqOut
@@ -335,7 +339,7 @@ provide
   => Keys req2
   => OmLayer req2 prov2 err2
   -> OmLayer req prov1 err1
-  -> OmLayer req prov2 ()
+  -> OmLayer req prov2 errDeduped
 provide l2 l1 = OmLayer (freshId unit) do
   prov1 <- Om.expand (buildLayer l1)
   Om.expand (buildLayer l2) # Om.widenCtx prov1
