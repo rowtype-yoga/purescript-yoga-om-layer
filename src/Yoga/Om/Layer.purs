@@ -527,21 +527,9 @@ instance
 
     combined :: OmLayer accReq errMerged (Record provMerged)
     combined = OmLayer (freshId unit) do
-      accProv <- coerceOm (buildLayer acc)
-      nextProv <- coerceOm (buildLayer next) # widenCtx' accProv
+      accProv <- Om.expandErr (buildLayer acc)
+      nextProv <- Om.expand (buildLayer next) # Om.widenCtx accProv
       pure (Record.merge accProv nextProv)
-
-    coerceOm :: forall r1 e1 r2 e2 a. Om (Record r1) e1 a -> Om (Record r2) e2 a
-    coerceOm = unsafeCoerce
-
--- | Om.widenCtx without constraints. Union/Nub from Prim.Row are
--- | compiler builtins with no runtime representation, so this is safe.
-widenCtx'
-  :: forall additional ctx err a
-   . Record additional
-  -> Om { | ctx } err a
-  -> Om { | ctx } err a
-widenCtx' = unsafeCoerce (Om.widenCtx :: {} -> Om {} () a -> Om {} () a)
 
 wireLayers
   :: forall layers rl req err prov
