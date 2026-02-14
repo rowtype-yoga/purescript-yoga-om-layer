@@ -700,7 +700,7 @@ class IsNil (rl :: RowList Type) (result :: Boolean) | rl -> result
 instance IsNil Nil True
 else instance IsNil (Cons sym ty tail) False
 
--- | Format a node: root gets ○, others get ◀── providerList
+-- | Format a node: each layer appears once, indented by depth, with providers listed.
 class FormatNode (isRoot :: Boolean) (depth :: Symbol) (sym :: Symbol) (reqRL :: RowList Type) (allLayers :: RowList Type) (line :: Symbol) | isRoot depth sym reqRL allLayers -> line
 
 -- Root node
@@ -711,13 +711,14 @@ instance
   ) =>
   FormatNode True depth sym Nil allLayers line
 
--- Non-root: show providers ───▶ this
+-- Non-root: show this ◂── providerList
 else instance
   ( ProviderNames reqRL allLayers provSym
   , Append "  " depth s1
-  , Append s1 provSym s2
-  , Append s2 " ───▶ " s3
-  , Append s3 sym line
+  , Append s1 "○ " s2
+  , Append s2 sym s3
+  , Append s3 "  ◂── " s4
+  , Append s4 provSym line
   ) =>
   FormatNode False depth sym reqRL allLayers line
 
