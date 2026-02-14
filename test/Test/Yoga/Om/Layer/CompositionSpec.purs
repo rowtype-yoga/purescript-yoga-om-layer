@@ -15,27 +15,24 @@ type Config = { port :: Int, host :: String }
 type Logger = { log :: String -> Effect Unit }
 type Database = { query :: String -> Effect (Array String) }
 
+loggerLayer :: OmLayer (config :: Config) () { logger :: Logger }
+loggerLayer = makeLayer do
+  { config } <- Om.ask
+  pure { logger: { log: \msg -> Console.log $ "[" <> config.host <> "] " <> msg } }
+
+databaseLayer :: OmLayer (config :: Config) () { database :: Database }
+databaseLayer = makeLayer do
+  { config } <- Om.ask
+  pure { database: { query: \_ -> pure [ "Result from " <> config.host ] } }
+
 spec :: Spec Unit
 spec = describe "Composition" do
 
   it "proves Row.Nub deduplicates shared requirements at type level" do
     let
-      loggerLayer :: OmLayer (config :: Config) () { logger :: Logger }
-      loggerLayer = makeLayer do
-        { config } <- Om.ask
-        pure { logger: { log: \msg -> Console.log $ "[" <> config.host <> "] " <> msg } }
-
-      databaseLayer :: OmLayer (config :: Config) () { database :: Database }
-      databaseLayer = makeLayer do
-        { config } <- Om.ask
-        pure { database: { query: \_ -> pure [ "Result from " <> config.host ] } }
-
-    let
       _proofOfDeduplication :: OmLayer (config :: Config) _ _
       _proofOfDeduplication = combineRequirements loggerLayer databaseLayer
-
     Console.log "Type-level deduplication works: (config, config) -> (config)"
-    pure unit
 
   it "proves deduplication at runtime via shared Ref" do
     accessLog <- liftEffect $ Ref.new ""
@@ -49,11 +46,7 @@ spec = describe "Composition" do
         let database = { query: \_ -> pure [ "Result from " <> config.host ] }
         pure { logger, database }
 
-    let
-      ctx =
-        { config: { port: 5432, host: "localhost" }
-        , accessLog: accessLog
-        }
+    let ctx = { config: { port: 5432, host: "localhost" }, accessLog: accessLog }
     result <- runLayer ctx combinedLayer
       # Om.runOm ctx
           { exception: \_ -> pure { logger: { log: \_ -> pure unit }, database: { query: \_ -> pure [] } } }
