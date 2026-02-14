@@ -24,9 +24,14 @@ module Yoga.Om.Layer
   , class WireLayersRL
   , class RowLabels
   , class FilterScope
-  , class FormatLayer
+  , class FindProvider
+  , class FindProviderMatch
+  , class HasLabel
+  , class EmitEdges
   , class PrintLayersRL
-  , class PrintLayersInner
+  , class PrintEdgesRL
+  , class IsNil
+  , class PrintLayer
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -576,79 +581,88 @@ instance FilterScope Nil Nil
 instance FilterScope (Cons "scope" Scope tail) tail
 else instance FilterScope tail out => FilterScope (Cons sym ty tail) (Cons sym ty out)
 
--- | Format a single layer line.
-class FormatLayer (prefix :: Symbol) (sym :: Symbol) (reqRL :: RowList Type) (provRL :: RowList Type) (line :: Symbol) | prefix sym reqRL provRL -> line
+-- | Given a label, find which layer in the RowList provides it.
+class FindProvider (label :: Symbol) (rl :: RowList Type) (provider :: Symbol) | label rl -> provider
 
--- No deps (after filtering scope)
+-- This layer provides the label
 instance
-  ( RowLabels provRL provSym
-  , Append prefix sym s1
-  , Append s1 " ─▶ " s2
-  , Append s2 provSym line
+  ( RowToList prov provRL
+  , HasLabel label provRL hasIt
+  , FindProviderMatch hasIt label sym (Cons sym (OmLayer req err (Record prov)) tail) provider
   ) =>
-  FormatLayer prefix sym Nil provRL line
+  FindProvider label (Cons sym (OmLayer req err (Record prov)) tail) provider
 
--- Has deps
+-- | Dispatch based on whether the current layer has the label.
+class FindProviderMatch (hasIt :: Boolean) (label :: Symbol) (sym :: Symbol) (rl :: RowList Type) (provider :: Symbol) | hasIt label sym rl -> provider
+
+-- Yes: this layer provides it
+instance FindProviderMatch True label sym rl sym
+
+-- No: keep looking in the tail
 else instance
-  ( RowLabels reqRL reqSym
-  , RowLabels provRL provSym
-  , Append prefix sym s1
-  , Append s1 " ─▶ " s2
-  , Append s2 provSym s3
-  , Append s3 " ◂── " s4
-  , Append s4 reqSym line
-  ) =>
-  FormatLayer prefix sym reqRL provRL line
+  FindProvider label tail provider =>
+  FindProviderMatch False label sym (Cons sym ty tail) provider
 
--- | Walk the layers RowList and build a Doc with tree connectors.
--- Uses a helper with a Boolean flag for "is first element".
+-- | Check if a RowList contains a given label.
+class HasLabel (label :: Symbol) (rl :: RowList Type) (result :: Boolean) | label rl -> result
+
+instance HasLabel label Nil False
+instance HasLabel label (Cons label ty tail) True
+else instance HasLabel label tail result => HasLabel label (Cons sym ty tail) result
+
+-- | For a consumer layer, emit one edge per requirement: "provider ───▶ consumer"
+class EmitEdges (consumer :: Symbol) (reqRL :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | consumer reqRL allLayers -> doc
+
+instance EmitEdges consumer Nil allLayers (Text "")
+
+else instance
+  ( FindProvider label allLayers provider
+  , Append "  " provider s1
+  , Append s1 " ───▶ " s2
+  , Append s2 consumer line
+  , EmitEdges consumer tail allLayers restDoc
+  ) =>
+  EmitEdges consumer (Cons label ty tail) allLayers (Above (Text line) restDoc)
+
+-- | Walk the layers RowList, emitting edges for each layer with requirements.
 class PrintLayersRL (rl :: RowList Type) (doc :: Doc) | rl -> doc
-class PrintLayersInner (isFirst :: Boolean) (rl :: RowList Type) (doc :: Doc) | isFirst rl -> doc
+class PrintEdgesRL (rl :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | rl allLayers -> doc
 
 instance PrintLayersRL Nil (Text "")
-else instance PrintLayersInner True rl doc => PrintLayersRL rl doc
-
--- Single remaining item when first: ─── (only layer)
-instance
-  ( IsSymbol sym
-  , RowToList req reqRL
-  , FilterScope reqRL filteredReqRL
-  , RowToList prov provRL
-  , FormatLayer "  ─── " sym filteredReqRL provRL line
-  ) =>
-  PrintLayersInner True (Cons sym (OmLayer req err (Record prov)) Nil) (Text line)
-
--- First item with more to come: ┌──
 else instance
-  ( IsSymbol sym
-  , RowToList req reqRL
-  , FilterScope reqRL filteredReqRL
-  , RowToList prov provRL
-  , FormatLayer "  ┌── " sym filteredReqRL provRL line
-  , PrintLayersInner False tail restDoc
+  ( PrintEdgesRL rl rl doc
   ) =>
-  PrintLayersInner True (Cons sym (OmLayer req err (Record prov)) tail) (Above (Text line) restDoc)
+  PrintLayersRL rl doc
 
--- Last item: └──
-instance
-  ( IsSymbol sym
-  , RowToList req reqRL
-  , FilterScope reqRL filteredReqRL
-  , RowToList prov provRL
-  , FormatLayer "  └── " sym filteredReqRL provRL line
-  ) =>
-  PrintLayersInner False (Cons sym (OmLayer req err (Record prov)) Nil) (Text line)
+instance PrintEdgesRL Nil allLayers (Text "")
 
--- Middle item: ├──
 else instance
-  ( IsSymbol sym
-  , RowToList req reqRL
+  ( RowToList req reqRL
   , FilterScope reqRL filteredReqRL
-  , RowToList prov provRL
-  , FormatLayer "  ├── " sym filteredReqRL provRL line
-  , PrintLayersInner False tail restDoc
+  , IsNil filteredReqRL isRoot
+  , PrintLayer isRoot sym filteredReqRL allLayers edgeDoc
+  , PrintEdgesRL tail allLayers restDoc
   ) =>
-  PrintLayersInner False (Cons sym (OmLayer req err (Record prov)) tail) (Above (Text line) restDoc)
+  PrintEdgesRL (Cons sym (OmLayer req err (Record prov)) tail) allLayers (Above edgeDoc restDoc)
+
+-- | Check if a RowList is Nil.
+class IsNil (rl :: RowList Type) (result :: Boolean) | rl -> result
+
+instance IsNil Nil True
+else instance IsNil (Cons sym ty tail) False
+
+-- | Print a single layer: root nodes as ○, others as edges.
+class PrintLayer (isRoot :: Boolean) (sym :: Symbol) (reqRL :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | isRoot sym reqRL allLayers -> doc
+
+instance
+  ( Append "  ○ " sym line
+  ) =>
+  PrintLayer True sym Nil allLayers (Text line)
+
+else instance
+  ( EmitEdges sym reqRL allLayers doc
+  ) =>
+  PrintLayer False sym reqRL allLayers doc
 
 wireLayersDebug
   :: forall layers rl req err prov doc
