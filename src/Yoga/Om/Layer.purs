@@ -19,8 +19,11 @@ module Yoga.Om.Layer
   , recovering
   , repeating
   , wireLayers
+  , wireLayersDebug
   , wireLayersRL
   , class WireLayersRL
+  , class RowLabels
+  , class PrintLayersRL
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -51,7 +54,8 @@ import Prim.Row (class Nub, class Union)
 import Prim.Row as Row
 import Type.Proxy (Proxy(..))
 import Prim.RowList (class RowToList, Cons, Nil, RowList)
-import Prim.TypeError (class Fail, Above, Quote, Text)
+import Prim.Symbol (class Append)
+import Prim.TypeError (class Fail, class Warn, Above, Doc, Quote, Text)
 import Record as Record
 import Record.Studio (class Keys)
 import Type.Equality (class TypeEquals)
@@ -541,3 +545,51 @@ wireLayers layers =
   wireLayersRL (Proxy :: Proxy rl) layers seed
   where
   seed = pure {} :: OmLayer (scope :: Scope) () (Record ())
+
+-- =============================================================================
+-- Debug graph printing
+-- =============================================================================
+
+class RowLabels (rl :: RowList Type) (out :: Symbol) | rl -> out
+
+instance RowLabels Nil ""
+
+else instance IsSymbol sym => RowLabels (Cons sym ty Nil) sym
+
+else instance
+  ( IsSymbol sym
+  , RowLabels tail rest
+  , Append sym ", " symComma
+  , Append symComma rest out
+  ) =>
+  RowLabels (Cons sym ty tail) out
+
+class PrintLayersRL (rl :: RowList Type) (doc :: Doc) | rl -> doc
+
+instance PrintLayersRL Nil (Text "")
+
+else instance
+  ( IsSymbol sym
+  , RowToList req reqRL
+  , RowLabels reqRL reqSym
+  , RowToList prov provRL
+  , RowLabels provRL provSym
+  , Append "  " sym indent
+  , Append indent " : (" withParen
+  , Append withParen reqSym withReq
+  , Append withReq ") -> {" withArrow
+  , Append withArrow provSym withProv
+  , Append withProv "}" line
+  , PrintLayersRL tail restDoc
+  ) =>
+  PrintLayersRL (Cons sym (OmLayer req err (Record prov)) tail) (Above (Text line) restDoc)
+
+wireLayersDebug
+  :: forall layers rl req err prov doc
+   . RowToList layers rl
+  => PrintLayersRL rl doc
+  => Warn (Above (Text "Layer wiring:") doc)
+  => WireLayersRL rl layers (scope :: Scope) () () req err prov
+  => Record layers
+  -> OmLayer req err (Record prov)
+wireLayersDebug = wireLayers
