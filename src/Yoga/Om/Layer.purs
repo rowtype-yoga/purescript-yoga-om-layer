@@ -596,7 +596,8 @@ instance EmitEdges consumer Nil allLayers (Text "")
 
 else instance
   ( FindProvider label allLayers provider
-  , Append provider " -> " s1
+  , Append "  " provider s0
+  , Append s0 " --> " s1
   , Append s1 consumer line
   , EmitEdges consumer tail allLayers restDoc
   ) =>
@@ -623,7 +624,7 @@ wireLayersDebug
   :: forall layers rl req err prov doc
    . RowToList layers rl
   => PrintLayersRL rl doc
-  => Warn (Above (Text "") (Above (Text "Copy into https://play.d2lang.com") doc))
+  => Warn (Above (Text "") (Above (Text "%%{init: {\"flowchart\": {\"defaultRenderer\": \"elk\"}} }%%") (Above (Text "flowchart LR") doc)))
   => WireLayersRL rl layers (scope :: Scope) () () req err prov
   => Record layers
   -> OmLayer req err (Record prov)
