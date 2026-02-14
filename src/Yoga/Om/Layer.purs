@@ -380,7 +380,7 @@ withScopedWith handlers layer callback = bracket acquire release use
 -- =============================================================================
 
 combineRequirements
-  :: forall req1 req2 prov1 prov2 err1 err2 provMerged provMergedRaw reqMerged reqDeduped errMerged errDeduped _req1 _req2 _err1 _err2
+  :: forall req1 req2 prov1 prov2 err1 err2 provMerged reqMerged reqDeduped errMerged errDeduped _req1 _req2 _err1 _err2
    . Union req1 req2 reqMerged
   => Nub reqMerged reqDeduped
   => Union req1 _req1 reqDeduped
@@ -389,8 +389,8 @@ combineRequirements
   => Nub errMerged errDeduped
   => Union err1 _err1 errDeduped
   => Union err2 _err2 errDeduped
-  => Union prov1 prov2 provMergedRaw
-  => Nub provMergedRaw provMerged
+  => Union prov1 prov2 provMerged
+  => Nub provMerged provMerged
   => Keys req1
   => Keys req2
   => OmLayer req1 err1 (Record prov1)
@@ -511,9 +511,9 @@ instance
   , Nub errMergedRaw errMerged
   , Union accErr _e1 errMerged
   , Union nextErr _e2 errMerged
-  -- merge provisions
-  , Union accProv nextProv provMergedRaw
-  , Nub provMergedRaw provMerged
+  -- merge provisions (Nub provMerged provMerged ensures disjoint)
+  , Union accProv nextProv provMerged
+  , Nub provMerged provMerged
   -- recurse
   , WireLayersRL tail layers accReq errMerged provMerged resReq resErr resProv
   ) =>
