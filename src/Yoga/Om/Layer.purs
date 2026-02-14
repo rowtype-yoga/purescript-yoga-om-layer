@@ -23,6 +23,8 @@ module Yoga.Om.Layer
   , wireLayersRL
   , class WireLayersRL
   , class RowLabels
+  , class FilterScope
+  , class FormatLayer
   , class PrintLayersRL
   , class CheckAllProvided
   , class CheckAllLabelsExist
@@ -550,6 +552,7 @@ wireLayers layers =
 -- Debug graph printing
 -- =============================================================================
 
+-- | Collect labels from a RowList into a comma-separated Symbol.
 class RowLabels (rl :: RowList Type) (out :: Symbol) | rl -> out
 
 instance RowLabels Nil ""
@@ -564,6 +567,39 @@ else instance
   ) =>
   RowLabels (Cons sym ty tail) out
 
+-- | Remove `scope :: Scope` from a RowList (it's always present, just noise).
+class FilterScope (rl :: RowList Type) (out :: RowList Type) | rl -> out
+
+instance FilterScope Nil Nil
+instance FilterScope (Cons "scope" Scope tail) tail
+else instance FilterScope tail out => FilterScope (Cons sym ty tail) (Cons sym ty out)
+
+-- | Format a single layer line with dep arrows.
+class FormatLayer (sym :: Symbol) (reqRL :: RowList Type) (provRL :: RowList Type) (line :: Symbol) | sym reqRL provRL -> line
+
+-- No deps (after filtering scope)
+instance
+  ( RowLabels provRL provSym
+  , Append "  " sym s1
+  , Append s1 " ── {" s2
+  , Append s2 provSym s3
+  , Append s3 "}" line
+  ) =>
+  FormatLayer sym Nil provRL line
+
+-- Has deps
+else instance
+  ( RowLabels reqRL reqSym
+  , RowLabels provRL provSym
+  , Append "  " sym s1
+  , Append s1 " ── {" s2
+  , Append s2 provSym s3
+  , Append s3 "}  ◀ " s4
+  , Append s4 reqSym line
+  ) =>
+  FormatLayer sym reqRL provRL line
+
+-- | Walk the layers RowList and build a Doc.
 class PrintLayersRL (rl :: RowList Type) (doc :: Doc) | rl -> doc
 
 instance PrintLayersRL Nil (Text "")
@@ -571,15 +607,9 @@ instance PrintLayersRL Nil (Text "")
 else instance
   ( IsSymbol sym
   , RowToList req reqRL
-  , RowLabels reqRL reqSym
+  , FilterScope reqRL filteredReqRL
   , RowToList prov provRL
-  , RowLabels provRL provSym
-  , Append "  " sym indent
-  , Append indent " : (" withParen
-  , Append withParen reqSym withReq
-  , Append withReq ") -> {" withArrow
-  , Append withArrow provSym withProv
-  , Append withProv "}" line
+  , FormatLayer sym filteredReqRL provRL line
   , PrintLayersRL tail restDoc
   ) =>
   PrintLayersRL (Cons sym (OmLayer req err (Record prov)) tail) (Above (Text line) restDoc)
@@ -588,7 +618,7 @@ wireLayersDebug
   :: forall layers rl req err prov doc
    . RowToList layers rl
   => PrintLayersRL rl doc
-  => Warn (Above (Text "Layer wiring:") doc)
+  => Warn (Above (Text "") (Above (Text "Layer wiring:") doc))
   => WireLayersRL rl layers (scope :: Scope) () () req err prov
   => Record layers
   -> OmLayer req err (Record prov)

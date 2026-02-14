@@ -8,7 +8,7 @@ import Effect.Ref as Ref
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 import Yoga.Om as Om
-import Yoga.Om.Layer (OmLayer, Scope, makeLayer, runScoped, wireLayers)
+import Yoga.Om.Layer (OmLayer, Scope, makeLayer, runScoped, wireLayers, wireLayersDebug)
 
 spec :: Spec Unit
 spec = describe "wireLayers" do
@@ -79,6 +79,31 @@ spec = describe "wireLayers" do
     result.db `shouldEqual` "postgres"
     result.cache `shouldEqual` "postgres-cache"
     result.repo `shouldEqual` "postgres-repo"
+    result.app `shouldEqual` "postgres-cache+postgres-repo"
+
+  it "wireLayersDebug emits dependency graph as compiler warning" do
+    let
+      a_db :: OmLayer (scope :: Scope) () { db :: String }
+      a_db = makeLayer (pure { db: "postgres" })
+
+      b_cache :: OmLayer (scope :: Scope, db :: String) () { cache :: String }
+      b_cache = makeLayer do
+        { db } <- Om.ask
+        pure { cache: db <> "-cache" }
+
+      b_repo :: OmLayer (scope :: Scope, db :: String) () { repo :: String }
+      b_repo = makeLayer do
+        { db } <- Om.ask
+        pure { repo: db <> "-repo" }
+
+      d_app :: OmLayer (scope :: Scope, cache :: String, repo :: String) () { app :: String }
+      d_app = makeLayer do
+        { cache, repo } <- Om.ask
+        pure { app: cache <> "+" <> repo }
+
+      app = wireLayersDebug { a_db, b_cache, b_repo, d_app }
+
+    result <- liftAff $ runScoped app
     result.app `shouldEqual` "postgres-cache+postgres-repo"
 
   it "memoizes shared dependencies within wireLayers" do
