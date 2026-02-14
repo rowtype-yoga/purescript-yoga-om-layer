@@ -26,6 +26,7 @@ module Yoga.Om.Layer
   , class FilterScope
   , class FormatLayer
   , class PrintLayersRL
+  , class PrintLayersInner
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -56,6 +57,7 @@ import Prim.Row (class Nub, class Union)
 import Prim.Row as Row
 import Type.Proxy (Proxy(..))
 import Prim.RowList (class RowToList, Cons, Nil, RowList)
+import Prim.Boolean (True, False)
 import Prim.Symbol (class Append)
 import Prim.TypeError (class Fail, class Warn, Above, Doc, Quote, Text)
 import Record as Record
@@ -574,45 +576,79 @@ instance FilterScope Nil Nil
 instance FilterScope (Cons "scope" Scope tail) tail
 else instance FilterScope tail out => FilterScope (Cons sym ty tail) (Cons sym ty out)
 
--- | Format a single layer line with dep arrows.
-class FormatLayer (sym :: Symbol) (reqRL :: RowList Type) (provRL :: RowList Type) (line :: Symbol) | sym reqRL provRL -> line
+-- | Format a single layer line.
+class FormatLayer (prefix :: Symbol) (sym :: Symbol) (reqRL :: RowList Type) (provRL :: RowList Type) (line :: Symbol) | prefix sym reqRL provRL -> line
 
 -- No deps (after filtering scope)
 instance
   ( RowLabels provRL provSym
-  , Append "  " sym s1
-  , Append s1 " ── {" s2
-  , Append s2 provSym s3
-  , Append s3 "}" line
+  , Append prefix sym s1
+  , Append s1 " ─▶ " s2
+  , Append s2 provSym line
   ) =>
-  FormatLayer sym Nil provRL line
+  FormatLayer prefix sym Nil provRL line
 
 -- Has deps
 else instance
   ( RowLabels reqRL reqSym
   , RowLabels provRL provSym
-  , Append "  " sym s1
-  , Append s1 " ── {" s2
+  , Append prefix sym s1
+  , Append s1 " ─▶ " s2
   , Append s2 provSym s3
-  , Append s3 "}  ◀ " s4
+  , Append s3 " ◂── " s4
   , Append s4 reqSym line
   ) =>
-  FormatLayer sym reqRL provRL line
+  FormatLayer prefix sym reqRL provRL line
 
--- | Walk the layers RowList and build a Doc.
+-- | Walk the layers RowList and build a Doc with tree connectors.
+-- Uses a helper with a Boolean flag for "is first element".
 class PrintLayersRL (rl :: RowList Type) (doc :: Doc) | rl -> doc
+class PrintLayersInner (isFirst :: Boolean) (rl :: RowList Type) (doc :: Doc) | isFirst rl -> doc
 
 instance PrintLayersRL Nil (Text "")
+else instance PrintLayersInner True rl doc => PrintLayersRL rl doc
 
+-- Single remaining item when first: ─── (only layer)
+instance
+  ( IsSymbol sym
+  , RowToList req reqRL
+  , FilterScope reqRL filteredReqRL
+  , RowToList prov provRL
+  , FormatLayer "  ─── " sym filteredReqRL provRL line
+  ) =>
+  PrintLayersInner True (Cons sym (OmLayer req err (Record prov)) Nil) (Text line)
+
+-- First item with more to come: ┌──
 else instance
   ( IsSymbol sym
   , RowToList req reqRL
   , FilterScope reqRL filteredReqRL
   , RowToList prov provRL
-  , FormatLayer sym filteredReqRL provRL line
-  , PrintLayersRL tail restDoc
+  , FormatLayer "  ┌── " sym filteredReqRL provRL line
+  , PrintLayersInner False tail restDoc
   ) =>
-  PrintLayersRL (Cons sym (OmLayer req err (Record prov)) tail) (Above (Text line) restDoc)
+  PrintLayersInner True (Cons sym (OmLayer req err (Record prov)) tail) (Above (Text line) restDoc)
+
+-- Last item: └──
+instance
+  ( IsSymbol sym
+  , RowToList req reqRL
+  , FilterScope reqRL filteredReqRL
+  , RowToList prov provRL
+  , FormatLayer "  └── " sym filteredReqRL provRL line
+  ) =>
+  PrintLayersInner False (Cons sym (OmLayer req err (Record prov)) Nil) (Text line)
+
+-- Middle item: ├──
+else instance
+  ( IsSymbol sym
+  , RowToList req reqRL
+  , FilterScope reqRL filteredReqRL
+  , RowToList prov provRL
+  , FormatLayer "  ├── " sym filteredReqRL provRL line
+  , PrintLayersInner False tail restDoc
+  ) =>
+  PrintLayersInner False (Cons sym (OmLayer req err (Record prov)) tail) (Above (Text line) restDoc)
 
 wireLayersDebug
   :: forall layers rl req err prov doc
