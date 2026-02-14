@@ -2,231 +2,231 @@
   [
     "Automatic Memoization builds the same layer only once when used in two branches",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Automatic Memoization memoized bracketLayer acquires and releases only once",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Automatic Memoization memoized scoped layer runs finalizer only once",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Composition proves Row.Nub deduplicates shared requirements at type level",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Composition proves deduplication at runtime via shared Ref",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Error Channel composes layers with different error types",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Error Channel propagates errors from the first layer",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Error Channel propagates errors from the second layer",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Error Channel propagates errors through vertical composition",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Error Channel scoped layer error triggers finalizers",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Error Channel scoped layers with errors run via runScopedWith",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Functor / Apply / Bind applies two layers",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Functor / Apply / Bind binds layers sequentially",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Functor / Apply / Bind maps over layer output",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Layer recovering does not retry on non-matching errors",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Layer recovering only retries the specified error in a multi-error layer",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Layer recovering preserves the error when retries are exhausted",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Layer recovering retries layer construction on matching errors",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Layer recovering uses RetryStatus in the check",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Layer repeating repeats layer construction while condition holds",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Layer repeating stops when policy exhausted",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Parallel runs layers in parallel via parApply",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Scoped Layers combines scoped and non-scoped layers",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Scoped Layers fresh layer builds twice even when same base layer",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Scoped Layers runs finalizers in reverse order on success",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Scoped Layers runs finalizers when the callback throws",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Scoped Layers threads finalizers through vertical composition (provide)",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "Scoped Layers works with bracketLayer",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "wireLayers memoizes shared dependencies within wireLayers",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "wireLayers wireLayersDebug emits dependency graph as compiler warning",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "wireLayers wires a diamond dependency",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "wireLayers wires a simple linear chain (A -> B -> C)",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ],
   [
     "wireLayers wires independent layers with no inter-dependencies",
     {
-      "timestamp": "1771057450178.0",
+      "timestamp": "1771057579324.0",
       "success": true
     }
   ]

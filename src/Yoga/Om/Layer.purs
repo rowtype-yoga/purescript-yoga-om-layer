@@ -27,11 +27,15 @@ module Yoga.Om.Layer
   , class FindProvider
   , class FindProviderMatch
   , class HasLabel
-  , class EmitEdges
+  , class LayerDepth
+  , class FindLayerReqs
+  , class MaxProviderDepth
+  , class MaxSymbol
   , class PrintLayersRL
   , class PrintEdgesRL
   , class IsNil
-  , class PrintLayer
+  , class FormatNode
+  , class ProviderNames
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
@@ -610,40 +614,85 @@ instance HasLabel label Nil False
 instance HasLabel label (Cons label ty tail) True
 else instance HasLabel label tail result => HasLabel label (Cons sym ty tail) result
 
--- | For a consumer layer, emit one edge per requirement: "provider ───▶ consumer"
-class EmitEdges (consumer :: Symbol) (reqRL :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | consumer reqRL allLayers -> doc
+-- | Compute depth of a layer: roots = "", each level adds "  ".
+class LayerDepth (sym :: Symbol) (allLayers :: RowList Type) (depth :: Symbol) | sym allLayers -> depth
 
-instance EmitEdges consumer Nil allLayers (Text "")
+instance
+  ( FindLayerReqs sym allLayers reqRL
+  , FilterScope reqRL filteredReqRL
+  , MaxProviderDepth filteredReqRL allLayers depth
+  ) =>
+  LayerDepth sym allLayers depth
+
+-- | Find the requirements RowList for a named layer.
+class FindLayerReqs (sym :: Symbol) (rl :: RowList Type) (reqRL :: RowList Type) | sym rl -> reqRL
+
+instance
+  ( RowToList req reqRL
+  ) =>
+  FindLayerReqs sym (Cons sym (OmLayer req err (Record prov)) tail) reqRL
 
 else instance
-  ( FindProvider label allLayers provider
-  , Append "  " provider s1
-  , Append s1 " ───▶ " s2
-  , Append s2 consumer line
-  , EmitEdges consumer tail allLayers restDoc
-  ) =>
-  EmitEdges consumer (Cons label ty tail) allLayers (Above (Text line) restDoc)
+  FindLayerReqs sym tail reqRL =>
+  FindLayerReqs sym (Cons other ty tail) reqRL
 
--- | Walk the layers RowList, emitting edges for each layer with requirements.
+-- | Compute max depth across all providers of a layer's requirements.
+-- For each required label, find its provider, get provider's depth, add "  ".
+-- "Max" is approximated: we pick the longest depth symbol (deepest provider).
+class MaxProviderDepth (reqRL :: RowList Type) (allLayers :: RowList Type) (depth :: Symbol) | reqRL allLayers -> depth
+
+-- No requirements: root layer, depth ""
+instance MaxProviderDepth Nil allLayers ""
+
+-- One or more requirements: depth = provider's depth + "  "
+else instance
+  ( FindProvider label allLayers provider
+  , LayerDepth provider allLayers provDepth
+  , Append provDepth "  " nextDepth
+  , MaxProviderDepth tail allLayers tailDepth
+  , MaxSymbol nextDepth tailDepth depth
+  ) =>
+  MaxProviderDepth (Cons label ty tail) allLayers depth
+
+-- | Pick the longer of two Symbols (approximating max depth).
+class MaxSymbol (a :: Symbol) (b :: Symbol) (max :: Symbol) | a b -> max
+
+-- Both empty: result is empty
+instance MaxSymbol "" "" ""
+
+-- a empty, b not: b wins
+else instance MaxSymbol "" b b
+
+-- a not empty, b empty: a wins
+else instance MaxSymbol a "" a
+
+-- Both non-empty: strip one char from each and recurse, then restore the winner
+else instance
+  ( Append "  " restA a
+  , Append "  " restB b
+  , MaxSymbol restA restB deeper
+  , Append "  " deeper max
+  ) =>
+  MaxSymbol a b max
+
+-- | Walk the layers RowList, printing each with indentation.
 class PrintLayersRL (rl :: RowList Type) (doc :: Doc) | rl -> doc
 class PrintEdgesRL (rl :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | rl allLayers -> doc
 
 instance PrintLayersRL Nil (Text "")
-else instance
-  ( PrintEdgesRL rl rl doc
-  ) =>
-  PrintLayersRL rl doc
+else instance PrintEdgesRL rl rl doc => PrintLayersRL rl doc
 
 instance PrintEdgesRL Nil allLayers (Text "")
 
 else instance
   ( RowToList req reqRL
   , FilterScope reqRL filteredReqRL
+  , LayerDepth sym allLayers depth
   , IsNil filteredReqRL isRoot
-  , PrintLayer isRoot sym filteredReqRL allLayers edgeDoc
+  , FormatNode isRoot depth sym filteredReqRL allLayers line
   , PrintEdgesRL tail allLayers restDoc
   ) =>
-  PrintEdgesRL (Cons sym (OmLayer req err (Record prov)) tail) allLayers (Above edgeDoc restDoc)
+  PrintEdgesRL (Cons sym (OmLayer req err (Record prov)) tail) allLayers (Above (Text line) restDoc)
 
 -- | Check if a RowList is Nil.
 class IsNil (rl :: RowList Type) (result :: Boolean) | rl -> result
@@ -651,18 +700,44 @@ class IsNil (rl :: RowList Type) (result :: Boolean) | rl -> result
 instance IsNil Nil True
 else instance IsNil (Cons sym ty tail) False
 
--- | Print a single layer: root nodes as ○, others as edges.
-class PrintLayer (isRoot :: Boolean) (sym :: Symbol) (reqRL :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | isRoot sym reqRL allLayers -> doc
+-- | Format a node: root gets ○, others get ◀── providerList
+class FormatNode (isRoot :: Boolean) (depth :: Symbol) (sym :: Symbol) (reqRL :: RowList Type) (allLayers :: RowList Type) (line :: Symbol) | isRoot depth sym reqRL allLayers -> line
 
+-- Root node
 instance
-  ( Append "  ○ " sym line
+  ( Append "  " depth s1
+  , Append s1 "○ " s2
+  , Append s2 sym line
   ) =>
-  PrintLayer True sym Nil allLayers (Text line)
+  FormatNode True depth sym Nil allLayers line
+
+-- Non-root: show providers ───▶ this
+else instance
+  ( ProviderNames reqRL allLayers provSym
+  , Append "  " depth s1
+  , Append s1 provSym s2
+  , Append s2 " ───▶ " s3
+  , Append s3 sym line
+  ) =>
+  FormatNode False depth sym reqRL allLayers line
+
+-- | Collect provider names for a set of requirements.
+class ProviderNames (reqRL :: RowList Type) (allLayers :: RowList Type) (out :: Symbol) | reqRL allLayers -> out
+
+instance ProviderNames Nil allLayers ""
 
 else instance
-  ( EmitEdges sym reqRL allLayers doc
+  ( FindProvider label allLayers provider
   ) =>
-  PrintLayer False sym reqRL allLayers doc
+  ProviderNames (Cons label ty Nil) allLayers provider
+
+else instance
+  ( FindProvider label allLayers provider
+  , ProviderNames tail allLayers rest
+  , Append provider ", " s1
+  , Append s1 rest out
+  ) =>
+  ProviderNames (Cons label ty tail) allLayers out
 
 wireLayersDebug
   :: forall layers rl req err prov doc
