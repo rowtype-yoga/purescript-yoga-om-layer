@@ -13,6 +13,7 @@ module Yoga.Om.Layer
   , runScopedWith
   , withScoped
   , withScopedWith
+  , scoped
   , combineRequirements
   , provide
   , (>->)
@@ -20,18 +21,33 @@ module Yoga.Om.Layer
   , repeating
   , wireLayers
   , wireLayersDebug
-  , wireLayersRL
-  , class WireLayersRL
   , class FilterScope
   , class FindProvider
   , class FindProviderMatch
   , class HasLabel
   , class EmitEdges
+  , class DashesFor
+  , class BoxTop, class BoxMid, class BoxBot
+  , class RenderDepChildNode
+  , class IsNotProvided
+  , class HasDirectMissing, class HasDirectMissingOr
+  , class FindLayerReqs
+  , class RenderProviderDeps
+  , class RenderDepTree
+  , class FirstProvLabel
+  , class PrintLayerDispatch
   , class PrintLayersRL
   , class PrintEdgesRL
+  , class PrintLayersASCII
+  , class PrintEdgesASCII
+  , NotProvided
   , class CheckAllProvided
   , class CheckAllLabelsExist
   , class CheckLabelExists
+  , class TopoWire, topoWire
+  , class AllLabelsIn
+  , class FindReady
+  , class FindReadyDispatch
   ) where
 
 import Prelude
@@ -60,8 +76,10 @@ import Prim.Row as Row
 import Type.Proxy (Proxy(..))
 import Prim.RowList (class RowToList, Cons, Nil, RowList)
 import Prim.Boolean (True, False)
-import Prim.Symbol (class Append)
-import Prim.TypeError (class Fail, class Warn, Above, Doc, Quote, Text)
+import Prim.Symbol (class Append, class Cons)
+import Type.Data.Boolean (class And)
+import Type.RowList (class RowListAppend)
+import Prim.TypeError (class Fail, class Warn, Above, Beside, Doc, Quote, Text)
 import Record as Record
 import Record.Studio (class Keys)
 import Type.Equality (class TypeEquals)
@@ -352,7 +370,7 @@ withScoped
    . OmLayer (scope :: Scope) () (Record prov)
   -> (Record prov -> Aff a)
   -> Aff a
-withScoped = withScopedWith { exception: \_ -> pure (unsafeCoerce {}) }
+withScoped = withScopedWith { exception: throwError }
 
 -- | Like `runScoped` but accepts error handlers for layers with typed errors.
 runScopedWith
@@ -384,6 +402,17 @@ withScopedWith handlers layer callback = bracket acquire release use
     pure { scope, prov }
   release { scope } = closeScope scope
   use { prov } = callback prov
+
+scoped
+  :: forall prov a r rl err_ err
+   . RowToList (exception :: Error -> Aff (Record prov) | r) rl
+  => VariantMatchCases rl err_ (Aff (Record prov))
+  => Union err_ () (exception :: Error | err)
+  => { exception :: Error -> Aff (Record prov) | r }
+  -> OmLayer (scope :: Scope) err (Record prov)
+  -> (Record prov -> Aff a)
+  -> Aff a
+scoped = withScopedWith
 
 -- =============================================================================
 -- Horizontal composition — combine two layers with automatic deduplication
@@ -481,13 +510,82 @@ repeating policy shouldRepeat (OmLayer layerId om) =
       (applyAndDelay policy status >>= maybe (pure result) go)
       (pure result)
 
+
 -- =============================================================================
--- Auto-wiring
+-- Topological auto-wiring (order-independent)
 -- =============================================================================
 
-class
-  WireLayersRL
-    (rl :: RowList Type)
+-- | Check if ALL labels in `needles` exist in `haystack`, returning a Boolean.
+class AllLabelsIn (needles :: RowList Type) (haystack :: RowList Type) (result :: Boolean)
+  | needles haystack -> result
+
+instance AllLabelsIn Nil haystack True
+
+instance
+  ( HasLabel label haystack found
+  , AllLabelsIn tail haystack tailResult
+  , And found tailResult result
+  ) =>
+  AllLabelsIn (Cons label ty tail) haystack result
+
+-- | Dispatch based on whether a layer is ready (deps satisfied).
+class FindReadyDispatch
+    (ready :: Boolean)
+    (sym :: Symbol)
+    (layer :: Type)
+    (tail :: RowList Type)
+    (available :: RowList Type)
+    (allLayersRL :: RowList Type)
+    (foundSym :: Symbol)
+    (foundLayer :: Type)
+    (rest :: RowList Type)
+  | ready sym layer tail available allLayersRL -> foundSym foundLayer rest
+
+instance FindReadyDispatch True sym layer tail available allLayersRL sym layer tail
+
+else instance
+  FindReady tail available allLayersRL foundSym foundLayer rest' =>
+  FindReadyDispatch False sym layer tail available allLayersRL foundSym foundLayer (Cons sym layer rest')
+
+-- | Scan candidates for the first layer whose requirements are satisfied.
+class FindReady
+    (candidates :: RowList Type)
+    (available :: RowList Type)
+    (allLayersRL :: RowList Type)
+    (sym :: Symbol)
+    (layer :: Type)
+    (rest :: RowList Type)
+  | candidates available allLayersRL -> sym layer rest
+
+instance
+  ( PrintLayersASCII allLayersRL graphDoc
+  , Fail
+      ( Above (Text "")
+          ( Above (Text "Dependency not provided!")
+              ( Above (Text "")
+                  ( Above (Text "No remaining layer has all its dependencies satisfied.")
+                      ( Above (Text "")
+                          ( Above (Text "Dependency graph:") graphDoc
+                          )
+                      )
+                  )
+              )
+          )
+      )
+  ) =>
+  FindReady Nil available allLayersRL sym layer rest
+
+else instance
+  ( RowToList req reqRL
+  , AllLabelsIn reqRL available isReady
+  , FindReadyDispatch isReady sym (OmLayer req err (Record prov)) tail available allLayersRL foundSym foundLayer rest
+  ) =>
+  FindReady (Cons sym (OmLayer req err (Record prov)) tail) available allLayersRL foundSym foundLayer rest
+
+-- | Topologically sort and wire layers. Each iteration finds a layer whose
+-- | dependencies are already satisfied, processes it, and adds its provisions.
+class TopoWire
+    (remaining :: RowList Type)
     (layers :: Row Type)
     (accReq :: Row Type)
     (accErr :: Row Type)
@@ -495,20 +593,25 @@ class
     (resReq :: Row Type)
     (resErr :: Row Type)
     (resProv :: Row Type)
-  | rl layers accReq accErr accProv -> resReq resErr resProv
+  | remaining layers accReq accErr accProv -> resReq resErr resProv
   where
-  wireLayersRL
-    :: Proxy rl
+  topoWire
+    :: Proxy remaining
     -> Record layers
     -> OmLayer accReq accErr (Record accProv)
     -> OmLayer resReq resErr (Record resProv)
 
-instance WireLayersRL Nil layers accReq accErr accProv accReq accErr accProv where
-  wireLayersRL _ _ acc = acc
+instance TopoWire Nil layers accReq accErr accProv accReq accErr accProv where
+  topoWire _ _ acc = acc
 
-instance
-  ( IsSymbol sym
-  , Row.Cons sym (OmLayer nextReq nextErr (Record nextProv)) _rest layers
+else instance
+  ( RowToList layers allLayersRL
+  , RowToList accProv accProvRL
+  , RowToList accReq accReqRL
+  , RowListAppend accProvRL accReqRL availableRL
+  , FindReady remaining availableRL allLayersRL readySym (OmLayer nextReq nextErr (Record nextProv)) rest
+  , IsSymbol readySym
+  , Row.Cons readySym (OmLayer nextReq nextErr (Record nextProv)) _rest layers
   -- next's requirements must be subset of (accProv + accReq)
   , Union accProv accReq provReqOut
   , Nub provReqOut provReqOut
@@ -521,19 +624,18 @@ instance
   , Nub errMergedRaw errMerged
   , Union accErr _e1 errMerged
   , Union nextErr _e2 errMerged
-  -- merge provisions (Nub provMerged provMerged ensures disjoint)
+  -- merge provisions
   , Union accProv nextProv provMerged
   , Nub provMerged provMerged
   -- recurse
-  , WireLayersRL tail layers accReq errMerged provMerged resReq resErr resProv
+  , TopoWire rest layers accReq errMerged provMerged resReq resErr resProv
   ) =>
-  WireLayersRL (Cons sym (OmLayer nextReq nextErr (Record nextProv)) tail) layers accReq accErr accProv resReq resErr resProv
-  where
-  wireLayersRL _ layers acc =
-    wireLayersRL (Proxy :: Proxy tail) layers combined
+  TopoWire remaining layers accReq accErr accProv resReq resErr resProv where
+  topoWire _ layers acc =
+    topoWire (Proxy :: Proxy rest) layers combined
     where
     next :: OmLayer nextReq nextErr (Record nextProv)
-    next = Record.get (Proxy :: Proxy sym) layers
+    next = Record.get (Proxy :: Proxy readySym) layers
 
     combined :: OmLayer accReq errMerged (Record provMerged)
     combined = OmLayer (freshId unit) do
@@ -544,11 +646,11 @@ instance
 wireLayers
   :: forall layers rl req err prov
    . RowToList layers rl
-  => WireLayersRL rl layers (scope :: Scope) () () req err prov
+  => TopoWire rl layers (scope :: Scope) () () req err prov
   => Record layers
   -> OmLayer req err (Record prov)
 wireLayers layers =
-  wireLayersRL (Proxy :: Proxy rl) layers seed
+  topoWire (Proxy :: Proxy rl) layers seed
   where
   seed = pure {} :: OmLayer (scope :: Scope) () (Record ())
 
@@ -563,10 +665,16 @@ instance FilterScope Nil Nil
 instance FilterScope (Cons "scope" Scope tail) tail
 else instance FilterScope tail out => FilterScope (Cons sym ty tail) (Cons sym ty out)
 
+-- | Marker symbol for unresolved dependencies.
+type NotProvided :: Symbol
+type NotProvided = "???"
+
 -- | Given a label, find which layer in the RowList provides it.
 class FindProvider (label :: Symbol) (rl :: RowList Type) (provider :: Symbol) | label rl -> provider
 
-instance
+instance FindProvider label Nil NotProvided
+
+else instance
   ( RowToList prov provRL
   , HasLabel label provRL hasIt
   , FindProviderMatch hasIt label sym (Cons sym (OmLayer req err (Record prov)) tail) provider
@@ -603,7 +711,7 @@ else instance
   ) =>
   EmitEdges consumer (Cons label ty tail) allLayers (Above (Text line) restDoc)
 
--- | Walk all layers emitting D2 edges.
+-- | Walk all layers emitting D2 edges (mermaid format for wireLayersDebug).
 class PrintLayersRL (rl :: RowList Type) (doc :: Doc) | rl -> doc
 class PrintEdgesRL (rl :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | rl allLayers -> doc
 
@@ -620,12 +728,203 @@ else instance
   ) =>
   PrintEdgesRL (Cons sym (OmLayer req err (Record prov)) tail) allLayers (Above edgeDoc restDoc)
 
+-- | Map a symbol to same-length dashes (for box borders).
+class DashesFor (sym :: Symbol) (dashes :: Symbol) | sym -> dashes
+
+instance DashesFor "" ""
+
+else instance
+  ( Cons head tail sym
+  , DashesFor tail rest
+  , Append "─" rest dashes
+  ) =>
+  DashesFor sym dashes
+
+-- | Build box parts from a symbol.
+class BoxTop (sym :: Symbol) (result :: Symbol) | sym -> result
+
+instance
+  ( DashesFor sym dashes
+  , Append "╭─" dashes s0
+  , Append s0 "─╮" result
+  ) =>
+  BoxTop sym result
+
+class BoxMid (sym :: Symbol) (result :: Symbol) | sym -> result
+
+instance
+  ( Append "│ " sym s0
+  , Append s0 " │" result
+  ) =>
+  BoxMid sym result
+
+class BoxBot (sym :: Symbol) (result :: Symbol) | sym -> result
+
+instance
+  ( DashesFor sym dashes
+  , Append "╰─" dashes s0
+  , Append s0 "─╯" result
+  ) =>
+  BoxBot sym result
+
+-- | Render a single dependency child node (dispatches on provided vs missing).
+class RenderDepChildNode
+  (isNotProvided :: Boolean) (provider :: Symbol) (label :: Symbol) (ty :: Type)
+  (prePrefix :: Symbol) (contPrefix :: Symbol) (branchPrefix :: Symbol)
+  (allLayers :: RowList Type) (doc :: Doc)
+  | isNotProvided provider label ty prePrefix contPrefix branchPrefix allLayers -> doc
+
+-- Missing dep: boxed label, type outside
+instance
+  ( BoxTop label topLine, BoxMid label midLine, BoxBot label botLine
+  , Append prePrefix topLine topFull
+  , Append branchPrefix midLine midFull
+  , Append contPrefix botLine botFull
+  ) =>
+  RenderDepChildNode True provider label ty prePrefix contPrefix branchPrefix allLayers
+    (Above (Text topFull) (Above (Beside (Text midFull) (Beside (Text " :: ") (Beside (Quote ty) (Text "  <-- ⚠️  not provided")))) (Text botFull)))
+
+-- Provided dep: boxed label, then recurse into provider's sub-tree
+instance
+  ( BoxTop label topLine, BoxMid label midLine, BoxBot label botLine
+  , Append prePrefix topLine topFull
+  , Append branchPrefix midLine midFull
+  , Append contPrefix botLine botFull
+  , Append contPrefix " " subTreePrefix
+  , RenderProviderDeps provider subTreePrefix allLayers subDoc
+  ) =>
+  RenderDepChildNode False provider label ty prePrefix contPrefix branchPrefix allLayers
+    (Above (Text topFull) (Above (Text midFull) (Above (Text botFull) subDoc)))
+
+-- | Is this provider the NotProvided marker?
+class IsNotProvided (provider :: Symbol) (result :: Boolean) | provider -> result
+instance IsNotProvided NotProvided True
+else instance IsNotProvided other False
+
+-- | Does any requirement in this RowList resolve to NotProvided?
+class HasDirectMissing (reqRL :: RowList Type) (allLayers :: RowList Type) (result :: Boolean)
+  | reqRL allLayers -> result
+
+instance HasDirectMissing Nil allLayers False
+
+else instance
+  ( FindProvider label allLayers provider
+  , IsNotProvided provider isMissing
+  , HasDirectMissingOr isMissing tail allLayers result
+  ) =>
+  HasDirectMissing (Cons label ty tail) allLayers result
+
+class HasDirectMissingOr (found :: Boolean) (tail :: RowList Type) (allLayers :: RowList Type) (result :: Boolean)
+  | found tail allLayers -> result
+
+instance HasDirectMissingOr True tail allLayers True
+
+else instance
+  HasDirectMissing tail allLayers result =>
+  HasDirectMissingOr False tail allLayers result
+
+-- | Look up a layer's requirements by name.
+class FindLayerReqs (sym :: Symbol) (allLayers :: RowList Type) (reqRL :: RowList Type)
+  | sym allLayers -> reqRL
+
+instance
+  RowToList req reqRL =>
+  FindLayerReqs sym (Cons sym (OmLayer req err (Record prov)) tail) reqRL
+
+else instance
+  FindLayerReqs sym tail reqRL =>
+  FindLayerReqs sym (Cons other otherLayer tail) reqRL
+
+-- | Render a provider's sub-tree (stops at NotProvided or roots).
+class RenderProviderDeps
+  (provider :: Symbol) (prefix :: Symbol) (allLayers :: RowList Type) (doc :: Doc)
+  | provider prefix allLayers -> doc
+
+instance RenderProviderDeps NotProvided prefix allLayers (Text "")
+
+else instance
+  ( FindLayerReqs provider allLayers reqRL
+  , FilterScope reqRL filteredReqRL
+  , RenderDepTree prefix filteredReqRL allLayers doc
+  ) =>
+  RenderProviderDeps provider prefix allLayers doc
+
+-- | Render a dependency tree with tree connectors.
+class RenderDepTree
+  (prefix :: Symbol) (reqRL :: RowList Type) (allLayers :: RowList Type) (doc :: Doc)
+  | prefix reqRL allLayers -> doc
+
+instance RenderDepTree prefix Nil allLayers (Text "")
+
+-- Last child: └───
+else instance
+  ( FindProvider label allLayers provider
+  , IsNotProvided provider isNP
+  , Append prefix "│   " prePrefix
+  , Append prefix "    " contPrefix
+  , Append prefix "└───" branchPrefix
+  , RenderDepChildNode isNP provider label ty prePrefix contPrefix branchPrefix allLayers doc
+  ) =>
+  RenderDepTree prefix (Cons label ty Nil) allLayers doc
+
+-- Non-last child: ├───
+else instance
+  ( FindProvider label allLayers provider
+  , IsNotProvided provider isNP
+  , Append prefix "│   " contPrefix
+  , Append prefix "├───" branchPrefix
+  , RenderDepChildNode isNP provider label ty contPrefix contPrefix branchPrefix allLayers childDoc
+  , RenderDepTree prefix tail allLayers restDoc
+  ) =>
+  RenderDepTree prefix (Cons label ty tail) allLayers (Above childDoc restDoc)
+
+-- | Extract the first label from a RowList.
+class FirstProvLabel (rl :: RowList Type) (label :: Symbol) | rl -> label
+instance FirstProvLabel (Cons label ty tail) label
+
+-- | Dispatch: skip layers without missing deps, render tree for others.
+class PrintLayerDispatch
+  (show :: Boolean) (displayName :: Symbol) (filteredReqRL :: RowList Type)
+  (tail :: RowList Type) (allLayers :: RowList Type) (doc :: Doc)
+  | show displayName filteredReqRL tail allLayers -> doc
+
+instance
+  PrintEdgesASCII tail allLayers doc =>
+  PrintLayerDispatch False displayName filteredReqRL tail allLayers doc
+
+else instance
+  ( BoxTop displayName topLine, BoxMid displayName midLine, BoxBot displayName botLine
+  , RenderDepTree " " filteredReqRL allLayers treeDoc
+  , PrintEdgesASCII tail allLayers restDoc
+  ) =>
+  PrintLayerDispatch True displayName filteredReqRL tail allLayers
+    (Above (Text topLine) (Above (Text midLine) (Above (Text botLine) (Above treeDoc (Above (Text "") restDoc)))))
+
+-- | Walk all layers emitting ASCII dependency trees (for error messages).
+class PrintLayersASCII (rl :: RowList Type) (doc :: Doc) | rl -> doc
+class PrintEdgesASCII (rl :: RowList Type) (allLayers :: RowList Type) (doc :: Doc) | rl allLayers -> doc
+
+instance PrintLayersASCII Nil (Text "")
+else instance PrintEdgesASCII rl rl doc => PrintLayersASCII rl doc
+
+instance PrintEdgesASCII Nil allLayers (Text "")
+
+else instance
+  ( RowToList req reqRL
+  , FilterScope reqRL filteredReqRL
+  , RowToList prov provRL
+  , FirstProvLabel provRL displayName
+  , HasDirectMissing filteredReqRL allLayers hasMissing
+  , PrintLayerDispatch hasMissing displayName filteredReqRL tail allLayers doc
+  ) =>
+  PrintEdgesASCII (Cons sym (OmLayer req err (Record prov)) tail) allLayers doc
+
 wireLayersDebug
   :: forall layers rl req err prov doc
    . RowToList layers rl
   => PrintLayersRL rl doc
   => Warn (Above (Text "") (Above (Text "%%{init: {\"flowchart\": {\"defaultRenderer\": \"elk\"}} }%%") (Above (Text "flowchart LR") doc)))
-  => WireLayersRL rl layers (scope :: Scope) () () req err prov
+  => TopoWire rl layers (scope :: Scope) () () req err prov
   => Record layers
   -> OmLayer req err (Record prov)
 wireLayersDebug = wireLayers
