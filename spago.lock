@@ -45,9 +45,6 @@
               "record-studio": ">=1.0.4 <2.0.0"
             },
             {
-              "ref-lifted": ">=0.0.1 <1.0.0"
-            },
-            {
               "refs": ">=6.0.0 <7.0.0"
             },
             {
@@ -93,7 +90,7 @@
     },
     "package_set": {
       "address": {
-        "registry": "73.0.0"
+        "registry": "73.2.0"
       },
       "compiler": ">=0.15.15 <0.16.0",
       "content": {
@@ -432,7 +429,7 @@
         "options": "7.0.0",
         "optparse": "5.0.1",
         "ordered-collections": "3.2.0",
-        "ordered-set": "0.4.0",
+        "ordered-set": "0.5.0",
         "orders": "6.0.0",
         "org-doc": "0.1.0",
         "owoify": "1.2.0",
@@ -523,6 +520,7 @@
         "selective-functors": "1.0.1",
         "semirings": "7.0.0",
         "shuffle": "2.0.0",
+        "sigil": "0.2.0",
         "signal": "13.0.0",
         "simple-emitter": "3.0.1",
         "simple-i18n": "2.0.1",
@@ -537,7 +535,7 @@
         "sparse-matrices": "2.0.1",
         "sparse-polynomials": "3.0.1",
         "spec": "8.1.1",
-        "spec-discovery": "8.4.0",
+        "spec-discovery": "8.4.1",
         "spec-mocha": "5.1.1",
         "spec-node": "0.0.3",
         "spec-quickcheck": "5.0.2",
@@ -682,11 +680,7 @@
         "zipperarray": "2.0.0"
       }
     },
-    "extra_packages": {
-      "ref-lifted": {
-        "path": "../purescript-ref-lifted"
-      }
-    }
+    "extra_packages": {}
   },
   "packages": {
     "aff": {
@@ -1577,15 +1571,6 @@
         "unsafe-coerce"
       ]
     },
-    "ref-lifted": {
-      "type": "local",
-      "path": "../purescript-ref-lifted",
-      "dependencies": [
-        "effect",
-        "prelude",
-        "refs"
-      ]
-    },
     "refs": {
       "type": "registry",
       "version": "6.0.0",
@@ -1639,8 +1624,8 @@
     },
     "spec-discovery": {
       "type": "registry",
-      "version": "8.4.0",
-      "integrity": "sha256-aFp8bllT/wrxQu8hMlDchQQY08dQAz+Xdq2hZi5z3yY=",
+      "version": "8.4.1",
+      "integrity": "sha256-guvY+NtSOBQmM+HqNJ7woX6taN8hS1wEz7JDmdKF11E=",
       "dependencies": [
         "aff",
         "effect",
