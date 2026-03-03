@@ -240,3 +240,4 @@ combineRequirements (OmLayer build1) (OmLayer build2) = makeLayer do
 
 **Status**: Proof of concept complete ✓ with working runtime implementation
 **Next**: Implement full instance-resolution based layer system with provideLayers API
+
