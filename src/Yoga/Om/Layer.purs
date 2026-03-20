@@ -340,9 +340,13 @@ else instance
 -- =============================================================================
 
 -- | Run a layer with a given context, with custom error if requirements aren't met.
+-- | `runLayer` requires a closed requirement row. If you have an open layer like
+-- | `OmLayer (db :: Db | r) err a`, specialize it to a closed row before running
+-- | it directly.
 runLayer
   :: forall req err a available
    . CheckAllProvided req available
+  => Keys req
   => Record available
   -> OmLayer req err a
   -> Om (Record available) err a

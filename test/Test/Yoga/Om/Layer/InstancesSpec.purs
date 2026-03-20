@@ -46,6 +46,18 @@ spec = do
       result <- Om.runOm {} { exception: \_ -> pure { result: 0 } } (runLayer {} layer)
       result.result `shouldEqual` 15
 
+    it "runs layers against a superset context" do
+      let
+        layer :: OmLayer (a :: Int) () { out :: Int }
+        layer = makeLayer do
+          { a } <- Om.ask
+          pure { out: a + 1 }
+
+        ctx = { a: 41, extra: "ok" }
+
+      result <- Om.runOm ctx { exception: \_ -> pure { out: 0 } } (runLayer ctx layer)
+      result.out `shouldEqual` 42
+
   describe "Parallel" do
 
     it "runs layers in parallel via parApply" do
