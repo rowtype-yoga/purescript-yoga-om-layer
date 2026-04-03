@@ -2,11 +2,14 @@ module Test.Yoga.Om.Layer.InstancesSpec where
 
 import Prelude
 
+import Control.Alt ((<|>))
+import Control.Monad.Reader (ask, local)
 import Control.Parallel (parApply)
 import Effect.Class (liftEffect)
 import Effect.Ref as Ref
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
+import Effect.Exception as Exception
 import Yoga.Om as Om
 import Yoga.Om.Layer (OmLayer, makeLayer, runLayer)
 
@@ -57,6 +60,84 @@ spec = do
 
       result <- Om.runOm ctx { exception: \_ -> pure { out: 0 } } (runLayer ctx layer)
       result.out `shouldEqual` 42
+
+  describe "MonadEffect / MonadAff" do
+
+    it "liftEffect works directly in layer bind" do
+      ref <- liftEffect $ Ref.new 0
+      let
+        layer :: OmLayer () () Int
+        layer = do
+          liftEffect $ Ref.write 42 ref
+          liftEffect $ Ref.read ref
+
+      result <- Om.runOm {} { exception: \_ -> pure 0 } (runLayer {} layer)
+      result `shouldEqual` 42
+
+  describe "MonadAsk / MonadReader" do
+
+    it "ask reads the context directly" do
+      let
+        layer :: OmLayer (port :: Int) () Int
+        layer = do
+          ctx <- ask
+          pure ctx.port
+
+      result <- Om.runOm { port: 8080 } { exception: \_ -> pure 0 } (runLayer { port: 8080 } layer)
+      result `shouldEqual` 8080
+
+    it "local modifies context for a layer" do
+      let
+        inner :: OmLayer (port :: Int) () Int
+        inner = do
+          ctx <- ask
+          pure ctx.port
+
+        layer :: OmLayer (port :: Int) () Int
+        layer = local (\r -> r { port = r.port + 1 }) inner
+
+      result <- Om.runOm { port: 8080 } { exception: \_ -> pure 0 } (runLayer { port: 8080 } layer)
+      result `shouldEqual` 8081
+
+  describe "MonadThrow / MonadError" do
+
+    it "throwError raises into the error channel" do
+      let
+        layer :: OmLayer () (myErr :: String) Int
+        layer = Om.throw { myErr: "boom" }
+
+      result <- Om.runOm {}
+        { exception: \_ -> pure (-1), myErr: \_ -> pure (-2) }
+        (runLayer {} layer)
+      result `shouldEqual` (-2)
+
+  describe "Alt" do
+
+    it "falls back to second layer on failure" do
+      let
+        failing :: OmLayer () () Int
+        failing = Om.throw { exception: Exception.error "nope" }
+
+        fallback :: OmLayer () () Int
+        fallback = pure 99
+
+        layer = failing <|> fallback
+
+      result <- Om.runOm {} { exception: \_ -> pure (-1) } (runLayer {} layer)
+      result `shouldEqual` 99
+
+  describe "Semigroup" do
+
+    it "appends layer outputs" do
+      let
+        a :: OmLayer () () String
+        a = pure "hello"
+
+        b :: OmLayer () () String
+        b = pure " world"
+
+      result <- Om.runOm {} { exception: \_ -> pure "" } (runLayer {} (a <> b))
+      result `shouldEqual` "hello world"
 
   describe "Parallel" do
 

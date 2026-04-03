@@ -15,6 +15,7 @@ module Yoga.Om.Layer
   , withScopedWith
   , scoped
   , combineRequirements
+  , withValue
   , provide
   , (>->)
   , recovering
@@ -52,10 +53,19 @@ module Yoga.Om.Layer
 
 import Prelude
 
-import Control.Monad.Error.Class (catchError, throwError)
-import Data.Symbol (class IsSymbol)
+import Control.Alt (class Alt)
+import Control.Alt as Alt
+import Control.Alternative (class Alternative)
+import Control.Monad.Error.Class (class MonadError, class MonadThrow, catchError, throwError)
+import Control.Monad.Reader (class MonadAsk, class MonadReader)
+import Control.Monad.Reader as Reader
+import Control.Monad.Rec.Class (class MonadRec, Step(..), tailRecM)
 import Control.Parallel (class Parallel)
 import Control.Parallel as Parallel
+import Control.Plus (class Plus)
+import Control.Plus as Plus
+import Data.Symbol (class IsSymbol)
+import Data.Variant (Variant)
 import Data.Array as Array
 import Data.Foldable (for_)
 import Data.Map (Map)
@@ -66,7 +76,10 @@ import Data.Variant (class VariantMatchCases, onMatch)
 import Effect (Effect)
 import Effect.Aff (Aff, bracket)
 import Effect.Aff.Retry (RetryPolicyM, RetryStatus, applyAndDelay, defaultRetryStatus)
-import Effect.Class (liftEffect)
+import Effect.Aff.Class (class MonadAff)
+import Effect.Aff.Class as Aff
+import Effect.Class (class MonadEffect, liftEffect)
+import Effect.Class (class MonadEffect, liftEffect) as Effect
 import Effect.Exception (Error)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
@@ -86,6 +99,7 @@ import Type.Equality (class TypeEquals)
 import Unsafe.Coerce (unsafeCoerce)
 import Yoga.Om (Om, ParOm)
 import Yoga.Om as Om
+import Yoga.Om.Error (Exception)
 
 -- =============================================================================
 -- Scope — a first-class representation of resource lifetime
@@ -174,6 +188,36 @@ instance Bind (OmLayer req err) where
 
 instance Monad (OmLayer req err)
 
+instance MonadEffect (OmLayer req err) where
+  liftEffect eff = OmLayer (freshId unit) (Effect.liftEffect eff)
+
+instance MonadAff (OmLayer req err) where
+  liftAff aff = OmLayer (freshId unit) (Aff.liftAff aff)
+
+instance MonadAsk (Record req) (OmLayer req err) where
+  ask = OmLayer (freshId unit) Reader.ask
+
+instance MonadReader (Record req) (OmLayer req err) where
+  local f layer = OmLayer (freshId unit) (Reader.local f (buildLayer layer))
+
+instance MonadThrow (Variant (Exception err)) (OmLayer req err) where
+  throwError e = OmLayer (freshId unit) (throwError e)
+
+instance MonadError (Variant (Exception err)) (OmLayer req err) where
+  catchError layer handler = OmLayer (freshId unit) (catchError (buildLayer layer) (\e -> buildLayer (handler e)))
+
+instance MonadRec (OmLayer req err) where
+  tailRecM f a = OmLayer (freshId unit) (tailRecM (\x -> buildLayer (f x)) a)
+
+instance Semigroup a => Semigroup (OmLayer req err a) where
+  append a b = OmLayer (freshId unit) (append (buildLayer a) (buildLayer b))
+
+instance Alt (OmLayer req err) where
+  alt a b = OmLayer (freshId unit) (Alt.alt (buildLayer a) (buildLayer b))
+
+instance Plus (OmLayer req err) where
+  empty = OmLayer (freshId unit) Plus.empty
+
 instance Functor (ParOmLayer req err) where
   map f (ParOmLayer p) = ParOmLayer (map f p)
 
@@ -182,6 +226,14 @@ instance Apply (ParOmLayer req err) where
 
 instance Applicative (ParOmLayer req err) where
   pure a = ParOmLayer (pure a)
+
+instance Alt (ParOmLayer req err) where
+  alt (ParOmLayer a) (ParOmLayer b) = ParOmLayer (Alt.alt a b)
+
+instance Plus (ParOmLayer req err) where
+  empty = ParOmLayer Plus.empty
+
+instance Alternative (ParOmLayer req err)
 
 instance Parallel (ParOmLayer req err) (OmLayer req err) where
   parallel (OmLayer _ om) = ParOmLayer (Parallel.parallel om)
@@ -443,6 +495,17 @@ combineRequirements layer1 layer2 = OmLayer (freshId unit) do
   rec1 <- Om.expand (buildLayer layer1)
   rec2 <- Om.expand (buildLayer layer2)
   pure (Record.merge rec1 rec2)
+
+withValue
+  :: forall req err prov1 prov2 provMerged
+   . Union prov1 prov2 provMerged
+  => Nub provMerged provMerged
+  => Record prov1
+  -> OmLayer req err (Record prov2)
+  -> OmLayer req err (Record provMerged)
+withValue defaults layer = OmLayer (freshId unit) do
+  rec <- buildLayer layer
+  pure (Record.merge defaults rec)
 
 -- =============================================================================
 -- Vertical composition — feed output of one layer into input of another
